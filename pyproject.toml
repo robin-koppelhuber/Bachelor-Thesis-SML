@@ -32,6 +32,25 @@ dev = [
     "ruff>=0.14.5",
 ]
 
+# Ruff configuration
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]  # Errors, pyflakes, isort
+ignore = ["E501"]  # Line too long
+
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-v"] # verbose by default; for less output use -q
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+
 [tool.uv.sources]
 torch = [
   { index = "pytorch-xpu",  extra = "xpu"  },

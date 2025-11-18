@@ -5,7 +5,7 @@
 - depending on your plattform / accelerator (`cpu`, `cuda`, `xpu`) run
 
 ```bash
-# dev is optional
+# --dev is optional
 uv sync --extra cpu --dev
 ```
 
