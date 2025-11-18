@@ -10,11 +10,37 @@ dependencies = [
     "transformers>=4.57.1",
 ]
 
+[project.optional-dependencies]
+cpu = [
+    "torch>=2.9.1",
+]
+cuda = [
+    "torch>=2.9.1",
+]
+xpu = [
+    "pytorch-triton-xpu>=3.5.0 ; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torch>=2.9.1",
+]
+
+[dependency-groups]
+cluster = [
+    "wandb>=0.23.0",
+]
+dev = [
+    "mypy>=1.18.2",
+    "pytest>=9.0.1",
+    "ruff>=0.14.5",
+]
+
 [tool.uv.sources]
-# torch = { index = "pytorch-cpu" }   # Uncomment for CPU
-# torch = { index = "pytorch-cu128" } # Uncomment for CUDA
-torch = { index = "pytorch-xpu" }      # Uncomment for XPU
-pytorch-triton-xpu = { index = "pytorch-xpu" }
+torch = [
+  { index = "pytorch-xpu",  extra = "xpu"  },
+  { index = "pytorch-cpu",  extra = "cpu"  },
+  { index = "pytorch-cu128", extra = "cuda" },
+]
+pytorch-triton-xpu = [
+  { index = "pytorch-xpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-xpu"
@@ -31,27 +57,20 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
-[project.optional-dependencies]
-cpu = [
-    "torch>=2.9.1",
-]
-cuda = [
-    "torch>=2.9.1",
-]
-xpu = [
-    "pytorch-triton-xpu>=3.5.0 ; sys_platform == 'linux' or sys_platform == 'win32'",
-    "torch>=2.9.1",
-]
-
 [tool.uv]
 environments = ["sys_platform == 'win32' or sys_platform == 'linux'"]
 
-[dependency-groups]
-cluster = [
-    "wandb>=0.23.0",
-]
-dev = [
-    "mypy>=1.18.2",
-    "pytest>=9.0.1",
-    "ruff>=0.14.5",
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cuda" },
+  ],
+  [
+    { extra = "cpu" },
+    { extra = "xpu" },
+  ],
+  [
+    { extra = "cuda" },
+    { extra = "xpu" },
+  ],
 ]

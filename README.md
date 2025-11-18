@@ -1,5 +1,11 @@
 ## About
 
 ## Install
-- depending on your plattform / accelerator, uncomment the appropriate line in `pyproject.toml` under `[tool.uv.sources]` (uv does not allow conditional sources with overlapping markers)
-- run e.g. `uv sync --extra cpu --dev` (replace `cpu` with `xpu` or `cuda` depending on your accelerator and source index)
+- install `uv` ([docs](https://docs.astral.sh/uv/getting-started/installation/))
+- depending on your plattform / accelerator (`cpu`, `cuda`, `xpu`) run
+
+```bash
+# dev is optional
+uv sync --extra cpu --dev
+```
+
