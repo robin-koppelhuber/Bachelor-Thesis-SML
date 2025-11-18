@@ -4,4 +4,33 @@ version = "0.1.0"
 description = "Project for benchmarking and deloping model merging methods for my bachelor thesis at the ETH Statistical Machine Learning Lab (SML)"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+
+dependencies = [
+    "datasets>=4.4.1",
+    "pytorch-triton-xpu>=3.5.0 ; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torch>=2.9.1",
+    "transformers>=4.57.1",
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-xpu", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+pytorch-triton-xpu = [
+  { index = "pytorch-xpu", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18.2",
+    "pytest>=9.0.1",
+    "ruff>=0.14.5",
+]
+wandb = [
+    "accelerate>=1.11.0",
+]
