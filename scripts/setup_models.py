@@ -19,8 +19,15 @@ def main():
     with initialize(version_base=None, config_path="../configs"):
         cfg: DictConfig = compose(config_name="config")
 
-    cache_dir = Path(cfg.paths.data_dir) / "cache"
+    # Use configured HuggingFace cache directory for models
+    cache_dir = Path(cfg.paths.hf_models_cache)
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_dir_base = cache_dir / "base"
+    cache_dir_finetuned = cache_dir / "finetuned"
+
+    cache_dir_base.mkdir(parents=True, exist_ok=True)
+    cache_dir_finetuned.mkdir(parents=True, exist_ok=True)
 
     logger.info("Downloading models for benchmark...")
     logger.info(f"Benchmark: {cfg.benchmark.name}")
@@ -30,11 +37,11 @@ def main():
     base_model_id = cfg.model.hf_model_id
     logger.info(f"\nDownloading base model: {base_model_id}")
     try:
-        tokenizer = load_tokenizer(base_model_id, cache_dir=cache_dir)
+        tokenizer = load_tokenizer(base_model_id, cache_dir=cache_dir_base)
         model = load_model(
             base_model_id,
             num_labels=2,  # Placeholder, will be overridden
-            cache_dir=cache_dir,
+            cache_dir=cache_dir_base,
             device=torch.device("cpu"),
         )
         logger.info("  ✓ Base model downloaded")
@@ -51,7 +58,7 @@ def main():
             model = load_model(
                 checkpoint,
                 num_labels=dataset_cfg.num_labels,
-                cache_dir=cache_dir,
+                cache_dir=cache_dir_finetuned,
                 device=torch.device("cpu"),
             )
             logger.info(f"  ✓ {task_name} model downloaded")

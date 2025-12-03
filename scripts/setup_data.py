@@ -18,7 +18,8 @@ def main():
     with initialize(version_base=None, config_path="../configs"):
         cfg: DictConfig = compose(config_name="config")
 
-    cache_dir = Path(cfg.paths.data_dir) / "cache"
+    # Use configured HuggingFace cache directory
+    cache_dir = Path(cfg.paths.hf_datasets_cache)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Downloading datasets for benchmark...")

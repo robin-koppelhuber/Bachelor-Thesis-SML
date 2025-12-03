@@ -6,13 +6,13 @@ model:
 
   # Model loading
   loading:
-    cache_dir: ${paths.data_dir}/cache
-    torch_dtype: auto  # auto, float32, float16, bfloat16
-    device_map: null  # null, auto, or custom device mapping
+    cache_dir: ${paths.hf_models_cache}
+    torch_dtype: auto # auto, float32, float16, bfloat16
+    device_map: null # null, auto, or custom device mapping
     trust_remote_code: false
 
   # Task vector computation
   task_vectors:
-    computation_method: subtract  # subtract = fine_tuned - base
+    computation_method: subtract # subtract = fine_tuned - base
     normalize: false
     save_dtype: float32

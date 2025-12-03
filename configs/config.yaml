@@ -19,6 +19,9 @@ paths:
   data_dir: data
   checkpoint_dir: checkpoints
   output_dir: outputs
+  # HuggingFace cache directories (null = use HF default in home directory)
+  hf_datasets_cache: ${paths.data_dir}/raw  # Cache for datasets
+  hf_models_cache: ${paths.checkpoint_dir}  # Cache for models
 
 # Weights & Biases settings
 wandb:
