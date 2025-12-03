@@ -1,0 +1,30 @@
+# @package _global_.datasets.ag_news
+name: ag_news
+display_name: "AG News"
+task_type: classification
+num_labels: 4
+
+# HuggingFace dataset
+hf_dataset:
+  path: fancyzhx/ag_news
+  split:
+    train: train
+    test: test
+
+# Fine-tuned model checkpoint
+finetuned_checkpoint: textattack/roberta-base-ag-news
+
+# Preprocessing
+preprocessing:
+  text_column: text
+  label_column: label
+  max_length: 512
+  truncation: true
+  padding: max_length
+
+# Evaluation
+evaluation:
+  batch_size: 32
+  metrics:
+    - accuracy
+    - f1_macro

@@ -1,0 +1,33 @@
+# @package _global_.datasets.mrpc
+name: mrpc
+display_name: "MRPC"
+task_type: classification
+num_labels: 2
+
+# HuggingFace dataset
+hf_dataset:
+  path: nyu-mll/glue
+  subset: mrpc
+  split:
+    train: train
+    validation: validation
+    test: validation  # Use validation as test
+
+# Fine-tuned model checkpoint
+finetuned_checkpoint: textattack/roberta-base-MRPC
+
+# Preprocessing
+preprocessing:
+  text_column: sentence1
+  text_column_2: sentence2
+  label_column: label
+  max_length: 512
+  truncation: true
+  padding: max_length
+
+# Evaluation
+evaluation:
+  batch_size: 32
+  metrics:
+    - accuracy
+    - f1_macro

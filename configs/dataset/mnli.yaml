@@ -1,0 +1,33 @@
+# @package _global_.datasets.mnli
+name: mnli
+display_name: "MNLI"
+task_type: classification
+num_labels: 3
+
+# HuggingFace dataset
+hf_dataset:
+  path: nyu-mll/glue
+  subset: mnli
+  split:
+    train: train
+    validation: validation_matched
+    test: validation_matched  # Use validation as test
+
+# Fine-tuned model checkpoint
+finetuned_checkpoint: textattack/roberta-base-MNLI
+
+# Preprocessing
+preprocessing:
+  text_column: premise  # Will concatenate with hypothesis
+  text_column_2: hypothesis
+  label_column: label
+  max_length: 512
+  truncation: true
+  padding: max_length
+
+# Evaluation
+evaluation:
+  batch_size: 32
+  metrics:
+    - accuracy
+    - f1_macro

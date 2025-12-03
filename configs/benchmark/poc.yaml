@@ -1,0 +1,43 @@
+# @package _global_
+benchmark:
+  name: proof_of_concept
+  description: "POC benchmark for roberta-base model merging"
+
+  # Tasks to evaluate
+  tasks:
+    - ag_news
+    - imdb
+    - mnli
+    - mrpc
+
+  # Preference vectors to test
+  preference_vectors:
+    # Equal preference
+    - [0.25, 0.25, 0.25, 0.25]
+    # Focus on each task
+    - [0.7, 0.1, 0.1, 0.1]
+    - [0.1, 0.7, 0.1, 0.1]
+    - [0.1, 0.1, 0.7, 0.1]
+    - [0.1, 0.1, 0.1, 0.7]
+    # Balanced pairs
+    - [0.4, 0.4, 0.1, 0.1]
+    - [0.1, 0.1, 0.4, 0.4]
+
+  # Grid search settings (optional)
+  grid:
+    enabled: false
+    resolution: 5  # Points per dimension
+    method: uniform  # uniform, random
+
+  # Evaluation settings
+  evaluation:
+    batch_size: 32
+    num_samples: null  # null = full dataset
+    metrics:
+      - accuracy
+      - f1_macro
+      - f1_weighted
+
+  # Save settings
+  save_merged_models: true
+  save_task_vectors: true

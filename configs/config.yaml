@@ -1,0 +1,46 @@
+defaults:
+  - _self_
+  - benchmark: poc
+  - model: roberta_base
+  - method: ties
+  - dataset@datasets.ag_news: ag_news
+  - dataset@datasets.imdb: imdb
+  - dataset@datasets.mnli: mnli
+  - dataset@datasets.mrpc: mrpc
+  - optional cluster: null
+
+# Global settings
+project_name: bachelor_thesis_sml
+seed: 42
+device: auto # auto, cpu, cuda, xpu
+
+# Paths (relative to project root)
+paths:
+  data_dir: data
+  checkpoint_dir: checkpoints
+  output_dir: outputs
+
+# Weights & Biases settings
+wandb:
+  enabled: true
+  project: ${project_name}
+  entity: null # Set via .env or override
+  mode: online # online, offline, disabled
+  tags: []
+  group: null
+  notes: null
+
+# Logging
+logging:
+  level: INFO
+  log_to_file: true
+  log_to_wandb: true
+  console_format: simple # simple, detailed, json
+
+# Hydra settings
+hydra:
+  run:
+    dir: ${paths.output_dir}/${benchmark.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${paths.output_dir}/${benchmark.name}/sweeps
+    subdir: ${hydra.job.num}

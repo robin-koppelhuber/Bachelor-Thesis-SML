@@ -1,0 +1,18 @@
+# @package _global_
+method:
+  name: ties
+  class_path: src.methods.ties.TIESMerging
+  description: "TIES: Resolving interference in task arithmetic"
+
+  # TIES-specific parameters
+  params:
+    k: 0.2  # Top-k fraction to keep (trim)
+    lambda_merge: 1.0  # Merge coefficient (scaling factor)
+    scaling_method: magnitude  # magnitude, sign, none
+
+    # Preference handling
+    use_preferences: true
+    normalize_preferences: true
+
+    # Sign agreement strategy
+    sign_consensus_method: majority  # majority, weighted

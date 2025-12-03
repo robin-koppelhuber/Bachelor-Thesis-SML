@@ -1,0 +1,30 @@
+# @package _global_
+method:
+  name: epo
+  class_path: src.methods.epo_search.EPOSearch
+  description: "Exact Pareto Optimization (EPO) search"
+
+  # EPO-specific parameters
+  params:
+    # Training settings
+    learning_rate: 2e-5
+    num_epochs: 3
+    batch_size: 16
+    warmup_steps: 100
+    weight_decay: 0.01
+
+    # EPO settings
+    solver: quadprog  # quadprog, cvxpy, scipy
+    n_tasks: 4  # Number of tasks (overridden by benchmark config)
+
+    # Preference handling
+    use_preferences: true
+    normalize_preferences: true
+
+    # MGDA settings
+    normalization_type: loss  # loss, loss+, none
+    update_weights_every: 1  # Update task weights every N steps
+
+    # Optimization
+    gradient_accumulation_steps: 1
+    max_grad_norm: 1.0
