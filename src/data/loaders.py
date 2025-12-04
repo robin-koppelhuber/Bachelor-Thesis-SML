@@ -15,6 +15,7 @@ def load_hf_dataset(
     subset: Optional[str] = None,
     split: str = "train",
     cache_dir: Optional[Path] = None,
+    streaming: bool = False,
 ) -> Dataset:
     """
     Load dataset from HuggingFace
@@ -24,11 +25,12 @@ def load_hf_dataset(
         subset: Optional dataset subset (e.g., 'mnli' for GLUE)
         split: Dataset split to load
         cache_dir: Optional cache directory
+        streaming: Whether to use streaming mode (minimal RAM)
 
     Returns:
         Loaded dataset
     """
-    logger.info(f"Loading dataset: {dataset_path} (subset={subset}, split={split})")
+    logger.info(f"Loading dataset: {dataset_path} (subset={subset}, split={split}, streaming={streaming})")
 
     if subset:
         dataset = load_dataset(
@@ -36,15 +38,20 @@ def load_hf_dataset(
             subset,
             split=split,
             cache_dir=str(cache_dir) if cache_dir else None,
+            streaming=streaming,
         )
     else:
         dataset = load_dataset(
             dataset_path,
             split=split,
             cache_dir=str(cache_dir) if cache_dir else None,
+            streaming=streaming,
         )
 
-    logger.info(f"  Loaded {len(dataset)} samples")
+    if not streaming:
+        logger.info(f"  Loaded {len(dataset)} samples")
+    else:
+        logger.info(f"  Streaming dataset created")
     return dataset
 
 
@@ -108,5 +115,9 @@ def preprocess_dataset(
         remove_columns=dataset.column_names,
     )
 
-    logger.info(f"  Preprocessed {len(processed)} samples")
+    # Log preprocessing completion (streaming datasets don't support len())
+    try:
+        logger.info(f"  Preprocessed {len(processed)} samples")
+    except TypeError:
+        logger.info("  Preprocessing complete (streaming dataset)")
     return processed

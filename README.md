@@ -3,17 +3,11 @@
 ## Todos
 
 - Package project into container, e.g. docker -> apptainer
-- [src/data/loaders.py](src/data/loaders.py) - Dataset loading (functional)
-- [src/models/loaders.py](src/models/loaders.py) - Model loading (functional)
-- [src/benchmarks/poc/run.py](src/benchmarks/poc/run.py) - POC runner for calling methods, merging, training and generating plots
-- Implement Ties Merging
-- Implement Chebishev Scalarization & training on multiple datasets
 - Implement EPO search
 
 #### Packages to add
 
 - Peft for LoRAs
-- Huggingface Hub
 
 ## Install
 

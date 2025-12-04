@@ -202,11 +202,12 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             import json
 
             # Generate unique identifier for this training configuration
+            # Convert OmegaConf objects to plain Python types for JSON serialization
             config_str = json.dumps({
                 "method": cfg.method.name,
                 "preference": preference_array.tolist(),
-                "params": dict(cfg.method.params),
-                "tasks": sorted(cfg.benchmark.tasks),
+                "params": OmegaConf.to_container(cfg.method.params, resolve=True),
+                "tasks": sorted(OmegaConf.to_container(cfg.benchmark.tasks, resolve=True)),
             }, sort_keys=True)
             config_hash = hashlib.md5(config_str.encode()).hexdigest()[:12]
 

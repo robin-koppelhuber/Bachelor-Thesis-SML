@@ -9,7 +9,7 @@ method:
     # Training settings
     learning_rate: 2e-5
     num_epochs: 3
-    batch_size: 16
+    batch_size: 8
     warmup_steps: 100
     weight_decay: 0.01
 
@@ -24,5 +24,11 @@ method:
     nadir_point: null   # null = compute from worst performance
 
     # Optimization
-    gradient_accumulation_steps: 1
+    gradient_accumulation_steps: 4  # Effective batch size = 4*4 = 16
     max_grad_norm: 1.0
+
+    # Memory optimization
+    use_fp16: false  # Mixed precision training (disable for max accuracy)
+    dataloader_num_workers: 0  # Avoid multiprocessing overhead
+    max_samples_per_task: null  # Limit samples per task (null = use all)
+    use_streaming: true  # Streaming datasets (minimal RAM, slower but accurate)

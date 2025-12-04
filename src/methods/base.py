@@ -76,6 +76,10 @@ class BaseTrainingMethod(ABC):
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
         normalize_preferences: bool = True,
+        use_fp16: bool = False,
+        dataloader_num_workers: int = 0,
+        max_samples_per_task: Optional[int] = None,
+        use_streaming: bool = False,
         **kwargs,
     ):
         """
@@ -90,6 +94,10 @@ class BaseTrainingMethod(ABC):
             gradient_accumulation_steps: Number of gradient accumulation steps
             max_grad_norm: Maximum gradient norm for clipping (0 = no clipping)
             normalize_preferences: Whether to normalize preference vector
+            use_fp16: Use mixed precision training (fp16) for memory efficiency
+            dataloader_num_workers: Number of workers for DataLoader (0 = main process only)
+            max_samples_per_task: Maximum samples per task (None = use all). Reduces RAM usage.
+            use_streaming: Use streaming datasets (loads data on-the-fly, minimal RAM)
             **kwargs: Additional method-specific parameters
         """
         self.params = kwargs
@@ -101,6 +109,10 @@ class BaseTrainingMethod(ABC):
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
         self.normalize_preferences = normalize_preferences
+        self.use_fp16 = use_fp16
+        self.dataloader_num_workers = dataloader_num_workers
+        self.max_samples_per_task = max_samples_per_task
+        self.use_streaming = use_streaming
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(lr={self.learning_rate}, epochs={self.num_epochs})"
@@ -110,18 +122,27 @@ class BaseTrainingMethod(ABC):
         dataset_configs: Dict,
         tokenizer: Any,
         task_names: list,
+        cache_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Load training data for all tasks
+        Load training data for all tasks with memory-efficient strategies
+
+        Supports three modes:
+        1. Full loading (default): All data in RAM
+        2. Sample limiting: Load subset of data (saves RAM)
+        3. Streaming: Load data on-the-fly (minimal RAM, experimental)
 
         Args:
             dataset_configs: Configuration for each dataset
             tokenizer: Tokenizer for preprocessing
             task_names: List of task names to load
+            cache_dir: Optional cache directory for datasets
 
         Returns:
             Dictionary mapping task names to DataLoaders
         """
+        from pathlib import Path
+
         from torch.utils.data import DataLoader
         from transformers import default_data_collator
 
@@ -134,14 +155,40 @@ class BaseTrainingMethod(ABC):
 
             logger.info(f"\nLoading training data for {task_name}...")
 
-            # Load training dataset
-            dataset = load_hf_dataset(
-                dataset_path=task_cfg.hf_dataset.path,
-                subset=task_cfg.hf_dataset.get("subset", None),
-                split=task_cfg.hf_dataset.split.train,
-            )
+            # Load training dataset with caching
+            if self.use_streaming:
+                # Streaming mode: minimal RAM but slower (experimental)
+                logger.info("  Using streaming mode (minimal RAM)")
+                dataset = load_hf_dataset(
+                    dataset_path=task_cfg.hf_dataset.path,
+                    subset=task_cfg.hf_dataset.get("subset", None),
+                    split=task_cfg.hf_dataset.split.train,
+                    cache_dir=Path(cache_dir) if cache_dir else None,
+                    streaming=True,
+                )
+            else:
+                # Regular loading
+                dataset = load_hf_dataset(
+                    dataset_path=task_cfg.hf_dataset.path,
+                    subset=task_cfg.hf_dataset.get("subset", None),
+                    split=task_cfg.hf_dataset.split.train,
+                    cache_dir=Path(cache_dir) if cache_dir else None,
+                    streaming=False,
+                )
 
-            # Preprocess
+                # Limit samples if configured
+                if self.max_samples_per_task is not None:
+                    original_size = len(dataset)
+                    if original_size > self.max_samples_per_task:
+                        # Use select for reproducible sampling
+                        dataset = dataset.select(range(self.max_samples_per_task))
+                        logger.info(
+                            f"  Limited dataset: {original_size} -> {self.max_samples_per_task} samples "
+                            f"(saves ~{(1 - self.max_samples_per_task/original_size)*100:.0f}% RAM)"
+                        )
+
+            # Preprocess with caching enabled
+            # Datasets library automatically caches preprocessed data
             processed = preprocess_dataset(
                 dataset=dataset,
                 tokenizer=tokenizer,
@@ -153,17 +200,29 @@ class BaseTrainingMethod(ABC):
                 padding=task_cfg.preprocessing.padding,
             )
 
-            # Create DataLoader
+            if not self.use_streaming:
+                # Set format for PyTorch (more memory efficient)
+                # Only works with non-streaming datasets
+                processed.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+
+            # Create DataLoader with memory-efficient settings
             dataloader = DataLoader(
                 processed,
                 batch_size=self.batch_size,
-                shuffle=True,
+                shuffle=True if not self.use_streaming else False,  # Streaming doesn't support shuffle
                 collate_fn=default_data_collator,
+                num_workers=self.dataloader_num_workers,
+                pin_memory=True if torch.cuda.is_available() else False,
+                persistent_workers=False,  # Don't keep workers alive between epochs
             )
 
             task_dataloaders[task_name] = dataloader
-            logger.info(f"  Loaded {len(processed)} training samples")
-            logger.info(f"  {len(dataloader)} batches per epoch")
+
+            if not self.use_streaming:
+                logger.info(f"  Loaded {len(processed)} training samples")
+                logger.info(f"  {len(dataloader)} batches per epoch")
+            else:
+                logger.info("  Streaming dataloader created (size unknown)")
 
         return task_dataloaders
 
@@ -226,8 +285,18 @@ class BaseTrainingMethod(ABC):
             weight_decay=self.weight_decay,
         )
 
-        # Calculate total training steps
-        min_steps_per_epoch = min(len(dl) for dl in train_dataloaders.values())
+        # Calculate total training steps (handle streaming dataloaders)
+        try:
+            min_steps_per_epoch = min(len(dl) for dl in train_dataloaders.values())
+        except TypeError:
+            # Streaming dataloaders don't support len()
+            if self.max_samples_per_task is not None:
+                min_steps_per_epoch = self.max_samples_per_task // self.batch_size
+            else:
+                # Default to a reasonable number for streaming
+                min_steps_per_epoch = 10000 // self.batch_size
+            logger.info(f"  Streaming mode detected: estimating {min_steps_per_epoch} steps per epoch")
+
         total_steps = self.num_epochs * min_steps_per_epoch
 
         logger.info(f"\nOptimizer setup:")
@@ -276,10 +345,11 @@ class BaseTrainingMethod(ABC):
         scheduler: Any,
         preference_vector: np.ndarray,
         epoch: int,
+        scaler: Optional[Any] = None,
         **kwargs,
     ) -> float:
         """
-        Train for one epoch
+        Train for one epoch with optional mixed precision
 
         Args:
             model: Model to train
@@ -289,6 +359,7 @@ class BaseTrainingMethod(ABC):
             scheduler: Learning rate scheduler
             preference_vector: Preference weights for tasks
             epoch: Current epoch number
+            scaler: Optional GradScaler for mixed precision training
             **kwargs: Additional parameters passed to _compute_multi_task_loss
 
         Returns:
@@ -305,69 +376,131 @@ class BaseTrainingMethod(ABC):
         }
 
         # Determine number of steps (use minimum dataloader length)
-        min_steps = min(len(dl) for dl in task_dataloaders.values())
+        # For streaming datasets, we need to handle them differently
+        try:
+            min_steps = min(len(dl) for dl in task_dataloaders.values())
+        except TypeError:
+            # Streaming datasets don't support len()
+            # Use a reasonable default or calculate from max_samples_per_task
+            if self.max_samples_per_task is not None:
+                min_steps = self.max_samples_per_task // self.batch_size
+            else:
+                # Default to a reasonable number for streaming
+                min_steps = 10000 // self.batch_size
+            logger.info(f"  Streaming mode: using {min_steps} steps per epoch")
 
         logger.info(f"\nEpoch {epoch+1}/{self.num_epochs}")
         logger.info(f"  Training steps: {min_steps}")
 
-        for step in range(min_steps):
+        step = 0
+        while step < min_steps:
             # Get batch from each task and compute losses
             task_losses = []
 
-            for task_idx, task_name in enumerate(task_names):
-                try:
-                    batch = next(task_iterators[task_name])
-                except StopIteration:
-                    # Restart iterator if exhausted
-                    task_iterators[task_name] = iter(task_dataloaders[task_name])
-                    batch = next(task_iterators[task_name])
+            # Use autocast for mixed precision
+            if scaler is not None:
+                from torch.amp import autocast
+                autocast_context = autocast('cuda')
+            else:
+                from contextlib import nullcontext
+                autocast_context = nullcontext()
 
-                # Move batch to device
-                batch = {k: v.to(model.device) for k, v in batch.items()}
+            with autocast_context:
+                # Try to get batches from all tasks
+                all_batches_available = True
+                temp_task_losses = []
 
-                # Forward pass
-                outputs = model(**batch)
-                task_losses.append(outputs.loss)
+                for task_idx, task_name in enumerate(task_names):
+                    try:
+                        batch = next(task_iterators[task_name])
+                    except StopIteration:
+                        if self.use_streaming:
+                            # For streaming, we've exhausted the data - stop epoch early
+                            all_batches_available = False
+                            break
+                        else:
+                            # For regular datasets, restart iterator
+                            task_iterators[task_name] = iter(task_dataloaders[task_name])
+                            try:
+                                batch = next(task_iterators[task_name])
+                            except StopIteration:
+                                # Dataset is completely empty
+                                all_batches_available = False
+                                break
 
-            # Convert task losses to tensor
-            losses_tensor = torch.stack(task_losses)
+                    # Move batch to device
+                    batch = {k: v.to(model.device) for k, v in batch.items()}
 
-            # Compute multi-task loss (method-specific)
-            preference_tensor = torch.tensor(
-                preference_vector, dtype=losses_tensor.dtype, device=losses_tensor.device
-            )
+                    # Forward pass
+                    outputs = model(**batch)
+                    temp_task_losses.append(outputs.loss)
 
-            multi_task_loss = self._compute_multi_task_loss(
-                task_losses=losses_tensor,
-                preference_vector=preference_tensor,
-                **kwargs,
-            )
+                # If we couldn't get batches from all tasks, stop
+                if not all_batches_available:
+                    logger.info(f"  Early stopping at step {step+1} (data exhausted)")
+                    break
 
-            # Backward pass
-            multi_task_loss.backward()
+                task_losses = temp_task_losses
 
-            # Gradient clipping
-            if self.max_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                # Convert task losses to tensor
+                losses_tensor = torch.stack(task_losses)
+
+                # Compute multi-task loss (method-specific)
+                preference_tensor = torch.tensor(
+                    preference_vector, dtype=losses_tensor.dtype, device=losses_tensor.device
+                )
+
+                # Move any tensor kwargs to the correct device
+                device_kwargs = {}
+                for key, value in kwargs.items():
+                    if isinstance(value, torch.Tensor):
+                        device_kwargs[key] = value.to(losses_tensor.device)
+                    else:
+                        device_kwargs[key] = value
+
+                multi_task_loss = self._compute_multi_task_loss(
+                    task_losses=losses_tensor,
+                    preference_vector=preference_tensor,
+                    **device_kwargs,
+                )
+
+            # Backward pass with gradient scaling
+            if scaler is not None:
+                scaler.scale(multi_task_loss).backward()
+            else:
+                multi_task_loss.backward()
 
             # Optimizer step (with gradient accumulation)
             if (step + 1) % self.gradient_accumulation_steps == 0:
-                optimizer.step()
+                if scaler is not None:
+                    # Gradient clipping with scaler
+                    if self.max_grad_norm > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    # Gradient clipping without scaler
+                    if self.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                    optimizer.step()
+
                 scheduler.step()
                 optimizer.zero_grad()
 
             total_loss += multi_task_loss.item()
             num_steps += 1
+            step += 1
 
             # Periodic logging
             if step % 100 == 0 or step == min_steps - 1:
                 logger.info(
-                    f"  Step {step+1}/{min_steps} - "
+                    f"  Step {step}/{min_steps} - "
                     f"Loss: {multi_task_loss.item():.4f} - "
                     f"Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
                 )
 
-        avg_loss = total_loss / num_steps
+        avg_loss = total_loss / num_steps if num_steps > 0 else 0.0
         return avg_loss
 
     def train(
@@ -434,11 +567,17 @@ class BaseTrainingMethod(ABC):
         # 2. Load training data for all tasks
         task_names = sorted(dataset_configs.keys())
         train_dataloaders = self._load_training_data(
-            dataset_configs, tokenizer, task_names
+            dataset_configs, tokenizer, task_names, cache_dir=dataset_cache_dir
         )
 
         # 3. Initialize model
         model = self._initialize_model(base_model, dataset_configs, device, cache_dir=model_cache_dir)
+
+        # Enable gradient checkpointing for memory efficiency (if available)
+        if hasattr(model, 'gradient_checkpointing_enable'):
+            model.gradient_checkpointing_enable()
+            logger.info("Gradient checkpointing enabled for memory efficiency")
+
         base_state_dict = copy.deepcopy(model.state_dict())
 
         # 4. Setup optimizer and scheduler
@@ -449,7 +588,14 @@ class BaseTrainingMethod(ABC):
             task_names, preference_vector, dataset_configs, cache_dir=model_cache_dir
         )
 
-        # 6. Training loop
+        # 6. Setup mixed precision training if enabled
+        scaler = None
+        if self.use_fp16 and torch.cuda.is_available():
+            from torch.amp import GradScaler
+            scaler = GradScaler('cuda')
+            logger.info("Mixed precision training (FP16) enabled")
+
+        # 7. Training loop
         logger.info("\nStarting training...")
         for epoch in range(self.num_epochs):
             avg_loss = self._train_epoch(
@@ -460,10 +606,17 @@ class BaseTrainingMethod(ABC):
                 scheduler=scheduler,
                 preference_vector=preference_vector,
                 epoch=epoch,
+                scaler=scaler,
                 **training_kwargs,
             )
 
             logger.info(f"Epoch {epoch+1}/{self.num_epochs} - Avg Loss: {avg_loss:.4f}")
+
+            # Clear cache after each epoch for memory efficiency
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
 
         # 7. Save trained model if requested
         if save_path:
