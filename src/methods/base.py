@@ -6,6 +6,7 @@ import torch
 import numpy as np
 
 
+# ABC / abstract base class forces subclasses to implement all abstract methods
 class BaseMergingMethod(ABC):
     """Base class for model merging methods"""
 

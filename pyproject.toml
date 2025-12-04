@@ -7,7 +7,7 @@ name = "bachelor-thesis-sml"
 version = "0.1.0"
 description = "Project for benchmarking and developing model merging methods for my bachelor thesis at the ETH Statistical Machine Learning Lab (SML)"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 
 dependencies = [
     "datasets>=4.4.1",

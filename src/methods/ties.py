@@ -120,15 +120,36 @@ class TIESMerging(BaseMergingMethod):
             task_vectors: Stacked task vectors (n_tasks, n_params)
 
         Returns:
-            Trimmed task vectors
+            Trimmed task vectors with bottom (1-k) parameters set to zero
         """
-        # TODO: Implement trimming
-        # For each task vector, keep only top-k% parameters by magnitude
-        # Set other parameters to zero
+        if self.k >= 1.0:
+            # Keep all parameters if k >= 1.0
+            logger.debug("k >= 1.0, keeping all parameters")
+            return task_vectors
 
-        # Placeholder: Return as-is for now
-        logger.warning("TIES trimming not implemented yet - using all parameters")
-        return task_vectors
+        n_tasks, n_params = task_vectors.shape
+        k_params = int(n_params * self.k)
+
+        if k_params == 0:
+            logger.warning(f"k={self.k} results in 0 parameters, keeping at least 1")
+            k_params = 1
+
+        logger.debug(f"Trimming to top-{k_params} params ({self.k*100:.1f}%) per task")
+
+        # For each task vector, keep only top-k by absolute magnitude
+        trimmed_vectors = torch.zeros_like(task_vectors)
+
+        for i in range(n_tasks):
+            # Get absolute values
+            abs_values = torch.abs(task_vectors[i])
+
+            # Find top-k indices
+            _, topk_indices = torch.topk(abs_values, k=k_params, largest=True)
+
+            # Keep only top-k values (preserve original signs)
+            trimmed_vectors[i, topk_indices] = task_vectors[i, topk_indices]
+
+        return trimmed_vectors
 
     def _elect_sign(
         self, task_vectors: torch.Tensor, preference_vector: np.ndarray
@@ -143,16 +164,43 @@ class TIESMerging(BaseMergingMethod):
         Returns:
             Sign vector (-1, 0, or 1 for each parameter)
         """
-        # TODO: Implement sign election
-        # For each parameter, determine the majority sign (positive or negative)
-        # Can use preference_vector to weight votes
+        if self.sign_consensus_method == "majority":
+            # Simple majority: sign of sum across tasks
+            sign_vector = torch.sign(task_vectors.sum(dim=0))
+            logger.debug("Using majority sign election")
 
-        # Placeholder: Use simple sign of mean for now
-        logger.warning(
-            "TIES sign election not implemented yet - using sign of mean"
+        elif self.sign_consensus_method == "weighted":
+            # Weighted by preference vector
+            preference_tensor = torch.tensor(
+                preference_vector,
+                dtype=task_vectors.dtype,
+                device=task_vectors.device,
+            ).view(-1, 1)
+
+            # Weighted sum
+            weighted_sum = (task_vectors * preference_tensor).sum(dim=0)
+            sign_vector = torch.sign(weighted_sum)
+            logger.debug("Using preference-weighted sign election")
+
+        else:
+            raise ValueError(
+                f"Unknown sign_consensus_method: {self.sign_consensus_method}"
+            )
+
+        # Resolve zeros (ties) to majority sign
+        # Count positive vs negative occurrences
+        num_positive = (task_vectors > 0).sum(dim=0).float()
+        num_negative = (task_vectors < 0).sum(dim=0).float()
+
+        # Where sign is zero, use majority
+        zero_mask = sign_vector == 0
+        sign_vector[zero_mask] = torch.where(
+            num_positive[zero_mask] >= num_negative[zero_mask],
+            torch.ones_like(sign_vector[zero_mask]),
+            -torch.ones_like(sign_vector[zero_mask]),
         )
-        mean_vector = task_vectors.mean(dim=0)
-        return torch.sign(mean_vector)
+
+        return sign_vector
 
     def _disjoint_merge(
         self,
@@ -171,22 +219,55 @@ class TIESMerging(BaseMergingMethod):
         Returns:
             Merged vector
         """
-        # TODO: Implement disjoint merge
-        # For each parameter, average values from tasks that agree with consensus sign
-        # Weight by preference_vector if use_preferences is True
+        # Create mask for values that agree with elected sign
+        # For positive sign: keep positive values
+        # For negative sign: keep negative values
+        # Shape: (n_tasks, n_params)
+        sign_agreement_mask = torch.where(
+            sign_vector.unsqueeze(0) > 0,
+            task_vectors > 0,  # If elected sign is positive, keep positive values
+            task_vectors < 0,  # If elected sign is negative, keep negative values
+        )
 
-        # Placeholder: Simple weighted average for now
-        logger.warning(
-            "TIES disjoint merge not implemented yet - using weighted average"
-        )
-        preference_tensor = torch.tensor(
-            preference_vector, dtype=task_vectors.dtype, device=task_vectors.device
-        )
-        preference_tensor = preference_tensor.view(-1, 1)  # (n_tasks, 1)
+        # Apply mask to get only agreeing values
+        selected_values = task_vectors * sign_agreement_mask
 
         if self.use_preferences:
-            merged_vector = (task_vectors * preference_tensor).sum(dim=0)
+            # Weighted average by preference
+            preference_tensor = torch.tensor(
+                preference_vector,
+                dtype=task_vectors.dtype,
+                device=task_vectors.device,
+            ).view(-1, 1)
+
+            # Weight the selected values
+            weighted_values = selected_values * preference_tensor
+
+            # Sum weighted values
+            numerator = weighted_values.sum(dim=0)
+
+            # Sum of weights for non-zero values
+            # Only count weights where the value was actually selected (non-zero)
+            weight_mask = sign_agreement_mask.float() * preference_tensor
+            denominator = weight_mask.sum(dim=0)
+
+            # Avoid division by zero
+            denominator = torch.clamp(denominator, min=1e-8)
+
+            merged_vector = numerator / denominator
+
+            logger.debug("Using preference-weighted disjoint merge")
+
         else:
-            merged_vector = task_vectors.mean(dim=0)
+            # Simple mean of agreeing values
+            non_zero_counts = sign_agreement_mask.sum(dim=0).float()
+            numerator = selected_values.sum(dim=0)
+
+            # Avoid division by zero
+            denominator = torch.clamp(non_zero_counts, min=1)
+
+            merged_vector = numerator / denominator
+
+            logger.debug("Using unweighted disjoint merge")
 
         return merged_vector

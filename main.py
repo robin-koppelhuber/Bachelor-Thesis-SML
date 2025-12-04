@@ -66,10 +66,41 @@ def main(cfg: DictConfig) -> None:
     logger.info("\nConfiguration:")
     logger.info(OmegaConf.to_yaml(cfg))
 
-    # TODO: Implement benchmark runner
-    logger.info("\n" + "=" * 80)
-    logger.info("Benchmark runner not implemented yet!")
-    logger.info("=" * 80)
+    # Run benchmark based on config
+    try:
+        if cfg.benchmark.name == "proof_of_concept":
+            from src.benchmarks.poc.run import run_poc_benchmark
+
+            results = run_poc_benchmark(cfg, device)
+            logger.info("\n" + "=" * 80)
+            logger.info("Benchmark Results:")
+            logger.info("=" * 80)
+            logger.info(f"Status: {results['status']}")
+            logger.info(f"Method: {results['method']}")
+            logger.info(f"Tasks: {results['tasks']}")
+
+            # Log to W&B if enabled
+            if wandb_run:
+                import wandb
+
+                for result_entry in results.get("all_results", []):
+                    pref_vec = result_entry["preference_vector"]
+                    task_results = result_entry["task_results"]
+
+                    # Create wandb log dict
+                    log_dict = {"preference_vector": pref_vec}
+                    for task_name, task_result in task_results.items():
+                        for metric_name, metric_value in task_result.metrics.items():
+                            log_dict[f"{task_name}/{metric_name}"] = metric_value
+
+                    wandb.log(log_dict)
+
+        else:
+            raise ValueError(f"Unknown benchmark: {cfg.benchmark.name}")
+
+    except Exception as e:
+        logger.error(f"Benchmark failed with error: {e}")
+        raise
 
     # Cleanup
     if wandb_run:

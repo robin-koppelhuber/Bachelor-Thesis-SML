@@ -20,18 +20,15 @@ def main():
         cfg: DictConfig = compose(config_name="config")
 
     # Use configured HuggingFace cache directory for models
-    cache_dir = Path(cfg.paths.hf_models_cache)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    cache_dir_base = cache_dir / "base"
-    cache_dir_finetuned = cache_dir / "finetuned"
+    cache_dir_base = Path(cfg.paths.hf_models_cache_base)
+    cache_dir_finetuned = Path(cfg.paths.hf_models_cache_finetuned)
 
     cache_dir_base.mkdir(parents=True, exist_ok=True)
     cache_dir_finetuned.mkdir(parents=True, exist_ok=True)
 
     logger.info("Downloading models for benchmark...")
     logger.info(f"Benchmark: {cfg.benchmark.name}")
-    logger.info(f"Cache directory: {cache_dir}")
+    logger.info(f"Cache directory: {cache_dir_base}")
 
     # Download base model
     base_model_id = cfg.model.hf_model_id
@@ -67,7 +64,7 @@ def main():
 
     logger.info("\n" + "=" * 80)
     logger.info("Model download complete!")
-    logger.info(f"Models cached in: {cache_dir}")
+    logger.info(f"Models cached in: {cache_dir_base}")
     logger.info("=" * 80)
 
 

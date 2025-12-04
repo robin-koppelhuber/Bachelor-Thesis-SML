@@ -15,4 +15,4 @@ method:
     normalize_preferences: true
 
     # Sign agreement strategy
-    sign_consensus_method: majority  # majority, weighted
+    sign_consensus_method: weighted  # majority, weighted

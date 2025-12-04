@@ -42,7 +42,7 @@ class ClassificationEvaluator:
         Initialize evaluator
 
         Args:
-            model: Model to evaluate
+            model: Model to evaluate (assumed to already be on correct device)
             tokenizer: Tokenizer for the model
             device: Device to run evaluation on
             batch_size: Batch size for evaluation
@@ -52,7 +52,7 @@ class ClassificationEvaluator:
         self.device = device
         self.batch_size = batch_size
 
-        self.model.to(self.device)
+        # Model is already on device from load_model(), just set to eval mode
         self.model.eval()
 
     def evaluate(
