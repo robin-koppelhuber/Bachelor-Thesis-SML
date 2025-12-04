@@ -32,3 +32,8 @@ method:
     dataloader_num_workers: 0  # Avoid multiprocessing overhead
     max_samples_per_task: null  # Limit samples per task (null = use all)
     use_streaming: true  # Streaming datasets (minimal RAM, slower but accurate)
+
+    # Checkpoint management
+    save_epoch_checkpoints: true  # Save checkpoint after each epoch
+    auto_resume: true  # Automatically resume from latest checkpoint if available
+    keep_all_epoch_checkpoints: false  # Keep all epoch checkpoints (true) or only latest (false)

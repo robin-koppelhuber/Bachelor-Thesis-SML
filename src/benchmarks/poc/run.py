@@ -203,10 +203,15 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             # Generate unique identifier for this training configuration
             # Convert OmegaConf objects to plain Python types for JSON serialization
+            # Exclude checkpoint management params from hash (they don't affect training results)
+            params = OmegaConf.to_container(cfg.method.params, resolve=True)
+            checkpoint_params = {'save_epoch_checkpoints', 'auto_resume', 'keep_all_epoch_checkpoints'}
+            training_params = {k: v for k, v in params.items() if k not in checkpoint_params}
+
             config_str = json.dumps({
                 "method": cfg.method.name,
                 "preference": preference_array.tolist(),
-                "params": OmegaConf.to_container(cfg.method.params, resolve=True),
+                "params": training_params,  # Only training-related params
                 "tasks": sorted(OmegaConf.to_container(cfg.benchmark.tasks, resolve=True)),
             }, sort_keys=True)
             config_hash = hashlib.md5(config_str.encode()).hexdigest()[:12]
@@ -264,6 +269,8 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     model_cache_dir=str(Path(cfg.paths.hf_models_cache_base)) if cfg.paths.hf_models_cache_base else None,
                     dataset_cache_dir=str(Path(cfg.paths.hf_datasets_cache)) if cfg.paths.hf_datasets_cache else None,
                     save_path=save_path,
+                    epoch_checkpoint_dir=str(Path(cfg.paths.epoch_checkpoints_dir)) if hasattr(cfg.paths, 'epoch_checkpoints_dir') else None,
+                    model_identifier=config_hash,
                 )
         else:
             # Parameter merging method: merge pre-computed task vectors

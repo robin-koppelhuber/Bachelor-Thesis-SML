@@ -24,6 +24,7 @@ paths:
   hf_models_cache_base: ${paths.checkpoint_dir}/base  # Cache for base models
   hf_models_cache_finetuned: ${paths.checkpoint_dir}/finetuned  # Cache for single-task finetuned models
   hf_models_cache_training: ${paths.checkpoint_dir}/training  # Cache for training-based method models (Chebyshev, EPO)
+  epoch_checkpoints_dir: ${paths.checkpoint_dir}/epoch_checkpoints  # Temporary epoch-level checkpoints
 
 # Weights & Biases settings
 wandb:

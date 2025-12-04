@@ -2,6 +2,7 @@
 
 import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -80,6 +81,9 @@ class BaseTrainingMethod(ABC):
         dataloader_num_workers: int = 0,
         max_samples_per_task: Optional[int] = None,
         use_streaming: bool = False,
+        save_epoch_checkpoints: bool = True,
+        auto_resume: bool = True,
+        keep_all_epoch_checkpoints: bool = False,
         **kwargs,
     ):
         """
@@ -98,6 +102,9 @@ class BaseTrainingMethod(ABC):
             dataloader_num_workers: Number of workers for DataLoader (0 = main process only)
             max_samples_per_task: Maximum samples per task (None = use all). Reduces RAM usage.
             use_streaming: Use streaming datasets (loads data on-the-fly, minimal RAM)
+            save_epoch_checkpoints: Save checkpoint after each epoch for resumption
+            auto_resume: Automatically resume from latest checkpoint if available
+            keep_all_epoch_checkpoints: Keep all epoch checkpoints (True) or only latest (False)
             **kwargs: Additional method-specific parameters
         """
         self.params = kwargs
@@ -113,6 +120,9 @@ class BaseTrainingMethod(ABC):
         self.dataloader_num_workers = dataloader_num_workers
         self.max_samples_per_task = max_samples_per_task
         self.use_streaming = use_streaming
+        self.save_epoch_checkpoints = save_epoch_checkpoints
+        self.auto_resume = auto_resume
+        self.keep_all_epoch_checkpoints = keep_all_epoch_checkpoints
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(lr={self.learning_rate}, epochs={self.num_epochs})"
@@ -511,6 +521,8 @@ class BaseTrainingMethod(ABC):
         model_cache_dir: Optional[str] = None,
         dataset_cache_dir: Optional[str] = None,
         save_path: Optional[str] = None,
+        epoch_checkpoint_dir: Optional[str] = None,
+        model_identifier: Optional[str] = None,
     ) -> torch.Tensor:
         """
         Train model using multi-task learning and return task vector
@@ -531,6 +543,8 @@ class BaseTrainingMethod(ABC):
             model_cache_dir: Optional cache directory for loading base models
             dataset_cache_dir: Optional cache directory for loading datasets
             save_path: Optional path to save the trained model
+            epoch_checkpoint_dir: Optional directory for epoch-level checkpoints (for resumption)
+            model_identifier: Optional unique identifier for this training run (for checkpoint naming)
 
         Returns:
             Task vector (flattened 1D tensor): fine_tuned_params - base_params
@@ -595,9 +609,21 @@ class BaseTrainingMethod(ABC):
             scaler = GradScaler('cuda')
             logger.info("Mixed precision training (FP16) enabled")
 
-        # 7. Training loop
+        # 7. Check for existing checkpoint to resume from
+        start_epoch = 0
+        if (self.auto_resume and epoch_checkpoint_dir and model_identifier and
+            self.save_epoch_checkpoints):
+            latest_checkpoint = self._find_latest_checkpoint(epoch_checkpoint_dir, model_identifier)
+            if latest_checkpoint:
+                logger.info("\nResuming training from checkpoint...")
+                start_epoch = self._load_epoch_checkpoint(
+                    latest_checkpoint, model, optimizer, scheduler, device, scaler
+                )
+                logger.info(f"Resuming from epoch {start_epoch+1}/{self.num_epochs}")
+
+        # 8. Training loop
         logger.info("\nStarting training...")
-        for epoch in range(self.num_epochs):
+        for epoch in range(start_epoch, self.num_epochs):
             avg_loss = self._train_epoch(
                 model=model,
                 task_dataloaders=train_dataloaders,
@@ -612,17 +638,35 @@ class BaseTrainingMethod(ABC):
 
             logger.info(f"Epoch {epoch+1}/{self.num_epochs} - Avg Loss: {avg_loss:.4f}")
 
+            # Save epoch checkpoint if enabled
+            if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:
+                self._save_epoch_checkpoint(
+                    model, optimizer, scheduler, epoch, epoch_checkpoint_dir,
+                    model_identifier, scaler
+                )
+
+                # Cleanup old checkpoints if we only want to keep the latest
+                if not self.keep_all_epoch_checkpoints:
+                    self._cleanup_old_checkpoints(
+                        epoch_checkpoint_dir, model_identifier, keep_epoch=epoch
+                    )
+
             # Clear cache after each epoch for memory efficiency
             if device.type == "cuda":
                 torch.cuda.empty_cache()
                 import gc
                 gc.collect()
 
-        # 7. Save trained model if requested
+        # 9. Save final trained model if requested
         if save_path:
             self._save_trained_model(model, save_path)
 
-        # 8. Compute task vector from trained model
+        # 10. Cleanup all epoch checkpoints after successful completion
+        if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:
+            logger.info("\nCleaning up epoch checkpoints after successful training...")
+            self._cleanup_old_checkpoints(epoch_checkpoint_dir, model_identifier, keep_epoch=None)
+
+        # 11. Compute task vector from trained model
         logger.info("\nComputing task vector from trained model...")
         trained_state_dict = model.state_dict()
         task_vector_dict = {}
@@ -631,7 +675,7 @@ class BaseTrainingMethod(ABC):
             if name in base_state_dict:
                 task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
 
-        # 9. Flatten and return
+        # 12. Flatten and return
         from src.benchmarks.poc.run import flatten_task_vector
         flattened = flatten_task_vector(task_vector_dict)
 
@@ -710,6 +754,195 @@ class BaseTrainingMethod(ABC):
             logger.info(f"  ✓ Model loaded successfully (torch format)")
 
         return model
+
+    def _get_epoch_checkpoint_path(
+        self,
+        checkpoint_dir: str,
+        model_identifier: str,
+        epoch: int,
+    ) -> Path:
+        """
+        Get path for epoch checkpoint
+
+        Args:
+            checkpoint_dir: Base directory for epoch checkpoints
+            model_identifier: Unique identifier for this training run (hash)
+            epoch: Epoch number
+
+        Returns:
+            Path to checkpoint file
+        """
+        checkpoint_dir_path = Path(checkpoint_dir)
+        checkpoint_dir_path.mkdir(parents=True, exist_ok=True)
+        return checkpoint_dir_path / f"{model_identifier}_epoch{epoch}.safetensors"
+
+    def _save_epoch_checkpoint(
+        self,
+        model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: Any,
+        epoch: int,
+        checkpoint_dir: str,
+        model_identifier: str,
+        scaler: Optional[Any] = None,
+    ) -> Path:
+        """
+        Save checkpoint after epoch with optimizer state for resumption
+
+        Args:
+            model: Model to save
+            optimizer: Optimizer state to save
+            scheduler: Scheduler state to save
+            epoch: Current epoch number
+            checkpoint_dir: Directory to save checkpoints
+            model_identifier: Unique identifier for this training run
+            scaler: Optional GradScaler for mixed precision training
+
+        Returns:
+            Path to saved checkpoint
+        """
+        checkpoint_path = self._get_epoch_checkpoint_path(checkpoint_dir, model_identifier, epoch)
+
+        logger.info(f"  Saving epoch {epoch+1} checkpoint to {checkpoint_path.name}...")
+
+        # Prepare checkpoint data
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': {k: v.cpu() for k, v in model.state_dict().items()},
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+        }
+
+        if scaler is not None:
+            checkpoint['scaler_state_dict'] = scaler.state_dict()
+
+        # Save checkpoint using torch.save (safetensors doesn't support optimizer states)
+        torch.save(checkpoint, checkpoint_path)
+        logger.info("  ✓ Epoch checkpoint saved")
+
+        return checkpoint_path
+
+    def _load_epoch_checkpoint(
+        self,
+        checkpoint_path: Path,
+        model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: Any,
+        device: torch.device,
+        scaler: Optional[Any] = None,
+    ) -> int:
+        """
+        Load checkpoint and restore training state
+
+        Args:
+            checkpoint_path: Path to checkpoint file
+            model: Model to load state into
+            optimizer: Optimizer to restore state into
+            scheduler: Scheduler to restore state into
+            device: Device to load checkpoint onto
+            scaler: Optional GradScaler to restore state into
+
+        Returns:
+            Epoch number to resume from (next epoch to train)
+        """
+        logger.info(f"  Loading checkpoint from {checkpoint_path.name}...")
+
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        if scaler is not None and 'scaler_state_dict' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
+        resume_epoch = checkpoint['epoch'] + 1  # Next epoch to train
+        logger.info(f"  ✓ Checkpoint loaded (resuming from epoch {resume_epoch+1})")
+
+        return resume_epoch
+
+    def _find_latest_checkpoint(
+        self,
+        checkpoint_dir: str,
+        model_identifier: str,
+    ) -> Optional[Path]:
+        """
+        Find the latest epoch checkpoint for this training run
+
+        Args:
+            checkpoint_dir: Directory containing checkpoints
+            model_identifier: Unique identifier for this training run
+
+        Returns:
+            Path to latest checkpoint or None if no checkpoints exist
+        """
+        import re
+
+        checkpoint_dir_path = Path(checkpoint_dir)
+        if not checkpoint_dir_path.exists():
+            return None
+
+        # Find all checkpoints for this model
+        pattern = f"{model_identifier}_epoch*.safetensors"
+        checkpoints = list(checkpoint_dir_path.glob(pattern))
+
+        if not checkpoints:
+            return None
+
+        # Extract epoch numbers and find latest
+        epoch_pattern = re.compile(rf"{re.escape(model_identifier)}_epoch(\d+)\.safetensors")
+        checkpoint_epochs = []
+        for cp in checkpoints:
+            match = epoch_pattern.match(cp.name)
+            if match:
+                epoch_num = int(match.group(1))
+                checkpoint_epochs.append((epoch_num, cp))
+
+        if not checkpoint_epochs:
+            return None
+
+        # Return checkpoint with highest epoch number
+        latest_epoch, latest_path = max(checkpoint_epochs, key=lambda x: x[0])
+        logger.info(f"Found existing checkpoint: {latest_path.name} (epoch {latest_epoch+1})")
+        return latest_path
+
+    def _cleanup_old_checkpoints(
+        self,
+        checkpoint_dir: str,
+        model_identifier: str,
+        keep_epoch: Optional[int] = None,
+    ) -> None:
+        """
+        Delete old epoch checkpoints, optionally keeping one specific epoch
+
+        Args:
+            checkpoint_dir: Directory containing checkpoints
+            model_identifier: Unique identifier for this training run
+            keep_epoch: Optional epoch number to keep (delete all others)
+        """
+        import re
+
+        checkpoint_dir_path = Path(checkpoint_dir)
+        if not checkpoint_dir_path.exists():
+            return
+
+        # Find all checkpoints for this model
+        pattern = f"{model_identifier}_epoch*.safetensors"
+        checkpoints = list(checkpoint_dir_path.glob(pattern))
+
+        epoch_pattern = re.compile(rf"{re.escape(model_identifier)}_epoch(\d+)\.safetensors")
+
+        for cp in checkpoints:
+            match = epoch_pattern.match(cp.name)
+            if match:
+                epoch_num = int(match.group(1))
+                # Delete if it's not the epoch we want to keep
+                if keep_epoch is None or epoch_num != keep_epoch:
+                    try:
+                        cp.unlink()
+                        logger.debug(f"  Deleted old checkpoint: {cp.name}")
+                    except Exception as e:
+                        logger.warning(f"  Failed to delete {cp.name}: {e}")
 
     def _get_training_kwargs(
         self, task_names: list, preference_vector: np.ndarray, dataset_configs: Dict, cache_dir: Optional[str] = None
