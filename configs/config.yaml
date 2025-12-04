@@ -21,8 +21,9 @@ paths:
   output_dir: outputs
   # HuggingFace cache directories (null = use HF default in home directory)
   hf_datasets_cache: ${paths.data_dir}/raw  # Cache for datasets
-  hf_models_cache_base: ${paths.checkpoint_dir}/base  # Cache for models
-  hf_models_cache_finetuned: ${paths.checkpoint_dir}/finetuned  # Cache for models
+  hf_models_cache_base: ${paths.checkpoint_dir}/base  # Cache for base models
+  hf_models_cache_finetuned: ${paths.checkpoint_dir}/finetuned  # Cache for single-task finetuned models
+  hf_models_cache_training: ${paths.checkpoint_dir}/training  # Cache for training-based method models (Chebyshev, EPO)
 
 # Weights & Biases settings
 wandb:

@@ -98,69 +98,86 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             torch_dtype=cfg.model.loading.torch_dtype,
         )
 
-    # Step 2: Load fine-tuned models and compute task vectors
+    # Step 2: Initialize merging method (check type first to optimize)
     logger.info("\n" + "=" * 80)
-    logger.info("Step 2: Computing task vectors")
-    logger.info("=" * 80)
-
-    task_vectors_dict = {}
-    dataset_configs = {}
-
-    for task_name in cfg.benchmark.tasks:
-        logger.info(f"\nProcessing task: {task_name}")
-
-        # Get dataset config
-        dataset_cfg = cfg.datasets[task_name]
-        dataset_configs[task_name] = dataset_cfg
-
-        # Load base model for this task
-        base_model = create_base_model(num_labels=dataset_cfg.num_labels)
-
-        # Load fine-tuned model
-        logger.info(f"  Loading fine-tuned model: {dataset_cfg.finetuned_checkpoint}")
-        finetuned_model = load_model(
-            model_id=dataset_cfg.finetuned_checkpoint,
-            num_labels=dataset_cfg.num_labels,
-            cache_dir=Path(cfg.paths.hf_models_cache_finetuned)
-            if cfg.paths.hf_models_cache_finetuned
-            else None,
-            device=device,
-            torch_dtype=cfg.model.loading.torch_dtype,
-        )
-
-        # Compute task vector
-        task_vector = compute_task_vector(finetuned_model, base_model)
-
-        # Store flattened version for merging
-        task_vectors_dict[task_name] = flatten_task_vector(task_vector)
-
-        logger.info(f"  Task vector shape: {task_vectors_dict[task_name].shape}")
-
-        # Clean up
-        del base_model, finetuned_model
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
-    # Get a template for unflattening later (use first task's structure)
-    first_task = cfg.benchmark.tasks[0]
-    base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
-    finetuned_model_template = load_model(
-        model_id=dataset_configs[first_task].finetuned_checkpoint,
-        num_labels=dataset_configs[first_task].num_labels,
-        cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
-        device=device,
-        torch_dtype=cfg.model.loading.torch_dtype,
-    )
-    task_vector_template = compute_task_vector(finetuned_model_template, base_model_template)
-    del base_model_template, finetuned_model_template
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
-    # Step 3: Initialize merging method
-    logger.info("\n" + "=" * 80)
-    logger.info("Step 3: Initializing merging method")
+    logger.info("Step 2: Initializing merging method")
     logger.info("=" * 80)
 
     method = MethodRegistry.create(cfg.method.name, **cfg.method.params)
     logger.info(f"Method: {method}")
+
+    # Import to check method type
+    from src.methods.base import BaseTrainingMethod
+
+    # Check if method requires task vectors (task-arithmetic methods)
+    requires_task_vectors = not isinstance(method, BaseTrainingMethod)
+
+    # Step 3: Prepare dataset configs and optionally compute task vectors
+    logger.info("\n" + "=" * 80)
+    if requires_task_vectors:
+        logger.info("Step 3: Computing task vectors for task-arithmetic method")
+    else:
+        logger.info("Step 3: Preparing dataset configs (skipping task vector computation)")
+    logger.info("=" * 80)
+
+    task_vectors_dict = {}
+    task_vector_template = None
+    dataset_configs = {}
+
+    # Collect dataset configs (always needed)
+    for task_name in cfg.benchmark.tasks:
+        dataset_cfg = cfg.datasets[task_name]
+        dataset_configs[task_name] = dataset_cfg
+
+    # Only compute task vectors if needed by the method
+    if requires_task_vectors:
+        for task_name in cfg.benchmark.tasks:
+            logger.info(f"\nProcessing task: {task_name}")
+            dataset_cfg = dataset_configs[task_name]
+
+            # Load base model for this task
+            base_model = create_base_model(num_labels=dataset_cfg.num_labels)
+
+            # Load fine-tuned model
+            logger.info(f"  Loading fine-tuned model: {dataset_cfg.finetuned_checkpoint}")
+            finetuned_model = load_model(
+                model_id=dataset_cfg.finetuned_checkpoint,
+                num_labels=dataset_cfg.num_labels,
+                cache_dir=Path(cfg.paths.hf_models_cache_finetuned)
+                if cfg.paths.hf_models_cache_finetuned
+                else None,
+                device=device,
+                torch_dtype=cfg.model.loading.torch_dtype,
+            )
+
+            # Compute task vector
+            task_vector = compute_task_vector(finetuned_model, base_model)
+
+            # Store flattened version for merging
+            task_vectors_dict[task_name] = flatten_task_vector(task_vector)
+
+            logger.info(f"  Task vector shape: {task_vectors_dict[task_name].shape}")
+
+            # Clean up
+            del base_model, finetuned_model
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+        # Get a template for unflattening later (use first task's structure)
+        first_task = cfg.benchmark.tasks[0]
+        base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
+        finetuned_model_template = load_model(
+            model_id=dataset_configs[first_task].finetuned_checkpoint,
+            num_labels=dataset_configs[first_task].num_labels,
+            cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
+            device=device,
+            torch_dtype=cfg.model.loading.torch_dtype,
+        )
+        task_vector_template = compute_task_vector(finetuned_model_template, base_model_template)
+        del base_model_template, finetuned_model_template
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    else:
+        logger.info("  ✓ Skipping task vector computation for training-based method")
+        logger.info(f"  Collected {len(dataset_configs)} dataset configurations")
 
     # Step 4: Merge task vectors for each preference vector and evaluate
     logger.info("\n" + "=" * 80)
@@ -176,13 +193,102 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
         preference_array = np.array(preference_vector, dtype=np.float32)
 
-        # Merge task vectors
-        logger.info("Merging task vectors...")
-        merged_flat = method.merge(
-            task_vectors=task_vectors_dict, preference_vector=preference_array
-        )
+        # Get merged task vector (via merging or training)
+        from src.methods.base import BaseTrainingMethod
 
-        # Unflatten merged vector
+        if isinstance(method, BaseTrainingMethod):
+            # Training-based method: train new model and get task vector
+            import hashlib
+            import json
+
+            # Generate unique identifier for this training configuration
+            config_str = json.dumps({
+                "method": cfg.method.name,
+                "preference": preference_array.tolist(),
+                "params": dict(cfg.method.params),
+                "tasks": sorted(cfg.benchmark.tasks),
+            }, sort_keys=True)
+            config_hash = hashlib.md5(config_str.encode()).hexdigest()[:12]
+
+            # Construct cache paths
+            cache_dir = Path(cfg.benchmark.training.cache_dir) if hasattr(cfg.benchmark, 'training') else None
+            model_filename = f"{cfg.method.name}_{config_hash}.safetensors"
+            model_cache_path = cache_dir / model_filename if cache_dir else None
+
+            # Check if we should use cached model
+            use_cached = (
+                hasattr(cfg.benchmark, 'training') and
+                cfg.benchmark.training.use_cached and
+                model_cache_path and
+                model_cache_path.exists() and
+                not cfg.benchmark.training.get('force_retrain', False)
+            )
+
+            if use_cached:
+                logger.info(f"Loading cached trained model from {model_cache_path}...")
+                # Load cached model and compute task vector
+                base_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
+                base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
+
+                # Load trained model
+                trained_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
+                method._load_trained_model(trained_model, str(model_cache_path), device=device)
+
+                # Compute task vector
+                trained_state_dict = trained_model.state_dict()
+                task_vector_dict = {
+                    name: param.cpu() - base_state_dict[name]
+                    for name, param in trained_state_dict.items()
+                    if name in base_state_dict
+                }
+                merged_flat = flatten_task_vector(task_vector_dict)
+                logger.info("  ✓ Loaded cached model successfully")
+            else:
+                # Train new model
+                logger.info("Training multi-task model...")
+
+                # Prepare save path if saving is enabled
+                save_path = None
+                if (hasattr(cfg.benchmark, 'training') and
+                    cfg.benchmark.training.save_trained_models and
+                    model_cache_path):
+                    model_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    save_path = str(model_cache_path)
+                    logger.info(f"  Will save trained model to: {save_path}")
+
+                merged_flat = method.train(
+                    base_model=cfg.model.hf_model_id,
+                    dataset_configs=dataset_configs,
+                    preference_vector=preference_array,
+                    model_cache_dir=str(Path(cfg.paths.hf_models_cache_base)) if cfg.paths.hf_models_cache_base else None,
+                    dataset_cache_dir=str(Path(cfg.paths.hf_datasets_cache)) if cfg.paths.hf_datasets_cache else None,
+                    save_path=save_path,
+                )
+        else:
+            # Parameter merging method: merge pre-computed task vectors
+            logger.info("Merging task vectors...")
+            merged_flat = method.merge(
+                task_vectors=task_vectors_dict,
+                preference_vector=preference_array
+            )
+
+        # Unflatten merged vector (create template if not already available)
+        if task_vector_template is None:
+            # Create template on-demand for training-based methods
+            first_task = cfg.benchmark.tasks[0]
+            base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
+            finetuned_model_template = load_model(
+                model_id=dataset_configs[first_task].finetuned_checkpoint,
+                num_labels=dataset_configs[first_task].num_labels,
+                cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
+                device=device,
+                torch_dtype=cfg.model.loading.torch_dtype,
+            )
+            task_vector_template = compute_task_vector(finetuned_model_template, base_model_template)
+            del base_model_template, finetuned_model_template
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            logger.info("  Created task vector template for evaluation")
+
         merged_task_vector = unflatten_task_vector(merged_flat, task_vector_template)
 
         # For each task, evaluate the merged model

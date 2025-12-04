@@ -19,7 +19,8 @@ method:
 
     # Preference handling
     normalize_preferences: true
-    utopia_point: null  # null = compute from single-task optima
+    # Compute with 200 samples on fine tuned models
+    utopia_point: [-0.13253337144851685, -0.12508374452590942, -4.7180962562561035, -0.24992592632770538]  # null = compute from single-task optima
     nadir_point: null   # null = compute from worst performance
 
     # Optimization

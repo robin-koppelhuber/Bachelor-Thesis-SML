@@ -79,17 +79,22 @@ def preprocess_dataset(
     def preprocess_function(examples):
         # Handle single or paired text
         if text_column_2:
-            texts = (examples[text_column], examples[text_column_2])
+            # For text pairs, pass both columns as separate arguments
+            tokenized = tokenizer(
+                examples[text_column],
+                examples[text_column_2],
+                max_length=max_length,
+                truncation=truncation,
+                padding=padding,
+            )
         else:
-            texts = examples[text_column]
-
-        # Tokenize
-        tokenized = tokenizer(
-            texts,
-            max_length=max_length,
-            truncation=truncation,
-            padding=padding,
-        )
+            # For single text, pass as single argument
+            tokenized = tokenizer(
+                examples[text_column],
+                max_length=max_length,
+                truncation=truncation,
+                padding=padding,
+            )
 
         # Add labels
         tokenized["labels"] = examples[label_column]

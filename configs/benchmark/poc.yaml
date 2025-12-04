@@ -41,3 +41,10 @@ benchmark:
   # Save settings
   save_merged_models: true
   save_task_vectors: true
+
+  # Training-based method settings (for Chebyshev, EPO, etc.)
+  training:
+    use_cached: true  # Use cached trained models if available
+    save_trained_models: true  # Save trained models to cache
+    force_retrain: false  # Force retraining even if cached model exists
+    cache_dir: ${paths.hf_models_cache_training}  # Directory for caching trained models

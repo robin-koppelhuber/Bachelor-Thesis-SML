@@ -21,14 +21,14 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from src.methods.base import BaseMergingMethod
+from src.methods.base import BaseTrainingMethod
 from src.methods.registry import MethodRegistry
 
 logger = logging.getLogger(__name__)
 
 
 @MethodRegistry.register("chebyshev")
-class ChebyshevFineTuning(BaseMergingMethod):
+class ChebyshevFineTuning(BaseTrainingMethod):
     """
     Fine-tuning with Chebyshev scalarization
 
@@ -38,107 +38,34 @@ class ChebyshevFineTuning(BaseMergingMethod):
 
     def __init__(
         self,
-        learning_rate: float = 2e-5,
-        num_epochs: int = 3,
-        batch_size: int = 16,
-        warmup_steps: int = 100,
-        weight_decay: float = 0.01,
         use_augmented: bool = True,
         epsilon: float = 0.001,
-        normalize_preferences: bool = True,
         utopia_point: Optional[np.ndarray] = None,
         nadir_point: Optional[np.ndarray] = None,
-        gradient_accumulation_steps: int = 1,
-        max_grad_norm: float = 1.0,
         **kwargs,
     ):
         """
         Initialize Chebyshev fine-tuning
 
         Args:
-            learning_rate: Learning rate for optimizer
-            num_epochs: Number of training epochs
-            batch_size: Batch size for training
-            warmup_steps: Number of warmup steps
-            weight_decay: Weight decay for regularization
             use_augmented: Use augmented Chebyshev scalarization
             epsilon: Augmentation weight for smoothness
-            normalize_preferences: Normalize preference vector
             utopia_point: Best performance per task (computed if None)
             nadir_point: Worst performance per task (computed if None)
-            gradient_accumulation_steps: Gradient accumulation steps
-            max_grad_norm: Maximum gradient norm for clipping
-            **kwargs: Additional parameters
+            **kwargs: Base training parameters (learning_rate, num_epochs, etc.)
         """
-        super().__init__(
-            learning_rate=learning_rate,
-            num_epochs=num_epochs,
-            batch_size=batch_size,
-            warmup_steps=warmup_steps,
-            weight_decay=weight_decay,
-            use_augmented=use_augmented,
-            epsilon=epsilon,
-            normalize_preferences=normalize_preferences,
-            utopia_point=utopia_point,
-            nadir_point=nadir_point,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            max_grad_norm=max_grad_norm,
-            **kwargs,
-        )
-        self.learning_rate = learning_rate
-        self.num_epochs = num_epochs
-        self.batch_size = batch_size
-        self.warmup_steps = warmup_steps
-        self.weight_decay = weight_decay
+        super().__init__(**kwargs)
         self.use_augmented = use_augmented
         self.epsilon = epsilon
-        self.normalize_preferences = normalize_preferences
         self.utopia_point = utopia_point
         self.nadir_point = nadir_point
-        self.gradient_accumulation_steps = gradient_accumulation_steps
-        self.max_grad_norm = max_grad_norm
 
-    def merge(
-        self,
-        task_vectors: Dict[str, torch.Tensor],
-        preference_vector: np.ndarray,
-        base_model: Optional[torch.nn.Module] = None,
-    ) -> torch.Tensor:
-        """
-        This method requires training, not simple merging of task vectors
-
-        For the POC, we'll need to implement the actual training loop.
-        This is a placeholder that raises NotImplementedError.
-
-        Args:
-            task_vectors: Not used for this method
-            preference_vector: Preference weights for each task
-            base_model: Base model to fine-tune from
-
-        Returns:
-            Trained model parameters (as task vector from base)
-
-        Raises:
-            NotImplementedError: This method requires implementation of training loop
-        """
-        # TODO: Implement Chebyshev fine-tuning training loop
-        # This requires:
-        # 1. Loading training data for all tasks
-        # 2. Setting up optimizer and scheduler
-        # 3. Training loop with Chebyshev scalarization loss
-        # 4. Computing task vector from trained model
-
-        logger.error("Chebyshev fine-tuning not implemented yet")
-        raise NotImplementedError(
-            "Chebyshev fine-tuning requires training loop implementation. "
-            "This method cannot be used with simple task vector merging."
-        )
-
-    def compute_chebyshev_loss(
+    def _compute_multi_task_loss(
         self,
         task_losses: torch.Tensor,
         preference_vector: torch.Tensor,
-        utopia_point: torch.Tensor,
+        utopia_point: Optional[torch.Tensor] = None,
+        **kwargs,
     ) -> torch.Tensor:
         """
         Compute Chebyshev scalarization loss
@@ -152,7 +79,8 @@ class ChebyshevFineTuning(BaseMergingMethod):
             Scalar loss value
         """
         # Weighted deviations from utopia point
-        weighted_deviations = preference_vector * (utopia_point - task_losses)
+        # Using negative loss as performance (higher is better)
+        weighted_deviations = preference_vector * (utopia_point - (-task_losses))
 
         # Chebyshev: minimize maximum weighted deviation
         chebyshev_loss = -weighted_deviations.max()
@@ -162,3 +90,148 @@ class ChebyshevFineTuning(BaseMergingMethod):
             chebyshev_loss += self.epsilon * weighted_deviations.sum()
 
         return chebyshev_loss
+
+    def _get_training_kwargs(
+        self, task_names: list, preference_vector: np.ndarray, dataset_configs: Dict, cache_dir: Optional[str] = None
+    ) -> Dict:
+        """
+        Get Chebyshev-specific training parameters
+
+        Computes utopia point for use in training loop
+
+        Args:
+            task_names: List of task names
+            preference_vector: Preference weights
+            dataset_configs: Dataset configurations
+            cache_dir: Optional cache directory for loading fine-tuned models
+
+        Returns:
+            Dictionary with 'utopia_point' for training
+        """
+        utopia_point = self._compute_utopia_point(task_names, preference_vector, dataset_configs, cache_dir=cache_dir)
+        return {"utopia_point": utopia_point}
+
+    def _compute_utopia_point(
+        self,
+        task_names: list,
+        preference_vector: np.ndarray,
+        dataset_configs: Dict,
+        cache_dir: Optional[str] = None,
+    ) -> torch.Tensor:
+        """
+        Compute utopia point (best achievable performance per task)
+
+        Loads pre-trained single-task models and evaluates them on validation
+        data to get actual best performance per task.
+
+        We use negative loss as the performance metric (higher is better)
+
+        Args:
+            task_names: List of task names
+            preference_vector: Preference weights
+            dataset_configs: Dataset configurations
+            cache_dir: Optional cache directory for loading fine-tuned models
+
+        Returns:
+            Utopia point tensor (n_tasks,)
+        """
+        if self.utopia_point is not None:
+            # Use provided utopia point from config
+            logger.info("Using utopia point from config")
+            return torch.tensor(self.utopia_point, dtype=torch.float32)
+
+        logger.info("\nComputing utopia point from fine-tuned models...")
+        if cache_dir:
+            logger.info(f"  Using model cache: {cache_dir}")
+
+        # Compute actual performance from fine-tuned models
+        import gc
+
+        from torch.utils.data import DataLoader
+        from transformers import default_data_collator
+
+        from src.data.loaders import load_hf_dataset, preprocess_dataset
+        from src.models.loaders import load_model, load_tokenizer
+        from src.utils.device import get_device
+
+        device = get_device()
+        utopia_losses = []
+
+        for task_name in task_names:
+            task_cfg = dataset_configs[task_name]
+            finetuned_checkpoint = task_cfg.finetuned_checkpoint
+
+            logger.info(f"  Evaluating {task_name} ({finetuned_checkpoint})...")
+
+            # Load fine-tuned model
+            tokenizer = load_tokenizer(finetuned_checkpoint, cache_dir=cache_dir)
+            model = load_model(
+                model_id=finetuned_checkpoint,
+                num_labels=task_cfg.num_labels,
+                device=device,
+                cache_dir=cache_dir,
+            )
+            model.eval()
+
+            # Load validation data (small sample for speed)
+            dataset = load_hf_dataset(
+                dataset_path=task_cfg.hf_dataset.path,
+                subset=task_cfg.hf_dataset.get("subset", None),
+                split=task_cfg.hf_dataset.split.get("validation", task_cfg.hf_dataset.split.test),
+            )
+
+            # Limit to 200 samples for speed
+            if len(dataset) > 200:
+                dataset = dataset.select(range(200))
+
+            # Preprocess
+            processed = preprocess_dataset(
+                dataset=dataset,
+                tokenizer=tokenizer,
+                text_column=task_cfg.preprocessing.text_column,
+                text_column_2=task_cfg.preprocessing.get("text_column_2", None),
+                label_column=task_cfg.preprocessing.label_column,
+                max_length=task_cfg.preprocessing.max_length,
+                truncation=task_cfg.preprocessing.truncation,
+                padding=task_cfg.preprocessing.padding,
+            )
+
+            # Create dataloader
+            dataloader = DataLoader(
+                processed,
+                batch_size=32,
+                shuffle=False,
+                collate_fn=default_data_collator,
+            )
+
+            # Evaluate
+            total_loss = 0.0
+            num_batches = 0
+
+            with torch.no_grad():
+                for batch in dataloader:
+                    batch = {k: v.to(device) for k, v in batch.items()}
+                    outputs = model(**batch)
+                    total_loss += outputs.loss.item()
+                    num_batches += 1
+
+            avg_loss = total_loss / num_batches
+            utopia_losses.append(-avg_loss)  # Negative loss (higher is better)
+
+            logger.info(f"    Average loss: {avg_loss:.4f} -> Utopia: {-avg_loss:.4f}")
+
+            # Clear GPU memory for next model
+            del model
+            del tokenizer
+            del dataloader
+            del processed
+            del dataset
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            gc.collect()
+
+        utopia_tensor = torch.tensor(utopia_losses, dtype=torch.float32)
+
+        logger.info(f"\nUtopia point (negative loss): {utopia_tensor.tolist()}")
+
+        return utopia_tensor
