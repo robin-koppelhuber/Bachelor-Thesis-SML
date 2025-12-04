@@ -3,16 +3,16 @@
 Fine-tuning from a base model using Chebyshev scalarization to optimize
 for a given preference vector over multiple tasks.
 
-The Chebyshev scalarization minimizes:
-    max_i { w_i * (f_i^* - f_i(x)) }
+The Chebyshev scalarization minimizes the maximum weighted deviation from the utopia point:
+    minimize: max_i { w_i * (L_i(x) - L_i^*) }
 
 Where:
 - w_i is the preference weight for task i
-- f_i^* is the utopia point (best performance on task i)
-- f_i(x) is the current performance on task i
+- L_i(x) is the current loss on task i
+- L_i^* is the utopia point (best achievable loss on task i, from fine-tuned models)
 
-For numerical stability, we typically use the augmented Chebyshev:
-    max_i { w_i * (f_i^* - f_i(x)) } + epsilon * sum_i { w_i * (f_i^* - f_i(x)) }
+For numerical stability and smoothness, we use the augmented Chebyshev:
+    minimize: max_i { w_i * (L_i(x) - L_i^*) } + epsilon * sum_i { w_i * (L_i(x) - L_i^*) }
 """
 
 import logging
@@ -70,20 +70,27 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         """
         Compute Chebyshev scalarization loss
 
+        Chebyshev scalarization minimizes the maximum weighted deviation from the utopia point:
+            minimize: max_i { w_i * (utopia_i - performance_i) }
+
+        Since we're working with losses (lower is better), we use:
+            minimize: max_i { w_i * (loss_i - utopia_loss_i) }
+
         Args:
-            task_losses: Losses for each task (n_tasks,)
+            task_losses: Losses for each task (n_tasks,) - positive values, lower is better
             preference_vector: Preference weights (n_tasks,)
-            utopia_point: Best performance per task (n_tasks,)
+            utopia_point: Best performance per task (n_tasks,) - negative losses from fine-tuned models
 
         Returns:
-            Scalar loss value
+            Scalar loss value to minimize
         """
         # Weighted deviations from utopia point
-        # Using negative loss as performance (higher is better)
-        weighted_deviations = preference_vector * (utopia_point - (-task_losses))
+        # utopia_point contains negative losses (e.g., -0.13), task_losses are positive (e.g., 1.4)
+        # deviation = task_loss - utopia_point = 1.4 - (-0.13) = 1.53 (positive, measures degradation)
+        weighted_deviations = preference_vector * (task_losses - utopia_point)
 
         # Chebyshev: minimize maximum weighted deviation
-        chebyshev_loss = -weighted_deviations.max()
+        chebyshev_loss = weighted_deviations.max()
 
         # Augmented Chebyshev: add sum term for smoothness
         if self.use_augmented:
@@ -216,9 +223,9 @@ class ChebyshevFineTuning(BaseTrainingMethod):
                     num_batches += 1
 
             avg_loss = total_loss / num_batches
-            utopia_losses.append(-avg_loss)  # Negative loss (higher is better)
+            utopia_losses.append(avg_loss)  # Best achievable loss (lower is better)
 
-            logger.info(f"    Average loss: {avg_loss:.4f} -> Utopia: {-avg_loss:.4f}")
+            logger.info(f"    Average loss: {avg_loss:.4f} (utopia point for this task)")
 
             # Clear GPU memory for next model
             del model
@@ -232,6 +239,6 @@ class ChebyshevFineTuning(BaseTrainingMethod):
 
         utopia_tensor = torch.tensor(utopia_losses, dtype=torch.float32)
 
-        logger.info(f"\nUtopia point (negative loss): {utopia_tensor.tolist()}")
+        logger.info(f"\nUtopia point (best achievable loss per task): {utopia_tensor.tolist()}")
 
         return utopia_tensor

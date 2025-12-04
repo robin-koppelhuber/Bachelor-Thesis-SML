@@ -19,9 +19,9 @@ method:
 
     # Preference handling
     normalize_preferences: true
-    # Compute with 200 samples on fine tuned models
-    utopia_point: [-0.13253337144851685, -0.12508374452590942, -4.7180962562561035, -0.24992592632770538]  # null = compute from single-task optima
-    nadir_point: null   # null = compute from worst performance
+    # Set to null to auto-compute from fine-tuned models (recommended)
+    utopia_point: null  # Best achievable loss per task (computed from single-task fine-tuned models)
+    nadir_point: null   # Worst performance (not currently used)
 
     # Optimization
     gradient_accumulation_steps: 4  # Effective batch size = 4*4 = 16

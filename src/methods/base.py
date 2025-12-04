@@ -510,6 +510,23 @@ class BaseTrainingMethod(ABC):
                     f"Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
                 )
 
+                # Log to W&B every 100 steps
+                try:
+                    import wandb
+                    if wandb.run:
+                        log_dict = {
+                            "train/step_loss": multi_task_loss.item(),
+                        }
+                        # Log individual task losses
+                        for task_name, task_loss in zip(task_names, losses_tensor):
+                            log_dict[f"train/task_loss/{task_name}"] = task_loss.item()
+
+                        # Calculate global step across all epochs
+                        global_step = epoch * min_steps + step
+                        wandb.log(log_dict, step=global_step)
+                except (ImportError, AttributeError):
+                    pass
+
         avg_loss = total_loss / num_steps if num_steps > 0 else 0.0
         return avg_loss
 
@@ -638,6 +655,18 @@ class BaseTrainingMethod(ABC):
 
             logger.info(f"Epoch {epoch+1}/{self.num_epochs} - Avg Loss: {avg_loss:.4f}")
 
+            # Log to W&B if available
+            try:
+                import wandb
+                if wandb.run:
+                    wandb.log({
+                        "train/epoch": epoch + 1,
+                        "train/loss": avg_loss,
+                        "train/learning_rate": optimizer.param_groups[0]['lr'],
+                    }, step=epoch + 1)
+            except (ImportError, AttributeError):
+                pass  # W&B not available or not initialized
+
             # Save epoch checkpoint if enabled
             if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:
                 self._save_epoch_checkpoint(
@@ -660,6 +689,29 @@ class BaseTrainingMethod(ABC):
         # 9. Save final trained model if requested
         if save_path:
             self._save_trained_model(model, save_path)
+
+            # Upload to W&B if enabled
+            try:
+                import wandb
+
+                from src.utils.wandb_utils import log_artifact
+
+                if wandb.run and wandb.config.get('wandb', {}).get('upload_models', False):
+                    artifact_name = f"{self.__class__.__name__}_{model_identifier}" if model_identifier else self.__class__.__name__
+                    log_artifact(
+                        artifact_path=Path(save_path),
+                        artifact_name=artifact_name,
+                        artifact_type="model",
+                        metadata={
+                            "method": self.__class__.__name__,
+                            "preference_vector": preference_vector.tolist(),
+                            "num_epochs": self.num_epochs,
+                            "learning_rate": self.learning_rate,
+                        }
+                    )
+                    logger.info(f"  Uploaded model to W&B as artifact: {artifact_name}")
+            except (ImportError, AttributeError, Exception) as e:
+                logger.debug(f"  Could not upload to W&B: {e}")
 
         # 10. Cleanup all epoch checkpoints after successful completion
         if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:

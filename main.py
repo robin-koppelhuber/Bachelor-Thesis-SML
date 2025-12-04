@@ -79,21 +79,36 @@ def main(cfg: DictConfig) -> None:
             logger.info(f"Method: {results['method']}")
             logger.info(f"Tasks: {results['tasks']}")
 
-            # Log to W&B if enabled
+            # Log summary table to W&B if enabled
             if wandb_run:
                 import wandb
 
+                # Create summary table for all preference vectors and tasks
+                table_data = []
                 for result_entry in results.get("all_results", []):
                     pref_vec = result_entry["preference_vector"]
+                    pref_str = str(pref_vec)
                     task_results = result_entry["task_results"]
 
-                    # Create wandb log dict
-                    log_dict = {"preference_vector": pref_vec}
                     for task_name, task_result in task_results.items():
-                        for metric_name, metric_value in task_result.metrics.items():
-                            log_dict[f"{task_name}/{metric_name}"] = metric_value
+                        row = {
+                            "preference_vector": pref_str,
+                            "task": task_name,
+                        }
+                        row.update(task_result.metrics)
+                        table_data.append(row)
 
-                    wandb.log(log_dict)
+                # Create W&B table
+                if table_data:
+                    columns = list(table_data[0].keys())
+                    table = wandb.Table(columns=columns, data=[list(row.values()) for row in table_data])
+                    wandb.log({"results_summary": table})
+
+                    # Log final summary metrics
+                    wandb.summary["num_preference_vectors"] = len(results["all_results"])
+                    wandb.summary["num_tasks"] = len(results["tasks"])
+                    wandb.summary["method"] = results["method"]
+                    wandb.summary["status"] = results["status"]
 
         else:
             raise ValueError(f"Unknown benchmark: {cfg.benchmark.name}")

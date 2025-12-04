@@ -364,6 +364,22 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             task_results[task_name] = result
 
+            # Log individual task results to W&B
+            try:
+                import wandb
+                if wandb.run:
+                    # Create preference vector string for grouping
+                    pref_str = "_".join([f"{p:.2f}" for p in preference_vector])
+                    log_dict = {}
+                    for metric_name, metric_value in result.metrics.items():
+                        log_dict[f"eval/{task_name}/{metric_name}"] = metric_value
+                    # Also log with preference prefix for easier comparison
+                    for metric_name, metric_value in result.metrics.items():
+                        log_dict[f"eval_pref_{pref_str}/{task_name}/{metric_name}"] = metric_value
+                    wandb.log(log_dict)
+            except (ImportError, AttributeError):
+                pass
+
             # Clean up
             del merged_model, test_dataset, test_dataset_processed, test_dataloader
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -381,6 +397,30 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         logger.info(f"Results for preference vector {preference_vector}:")
         for task_name, result in task_results.items():
             logger.info(f"  {task_name}: {result.metrics}")
+
+        # Log aggregate metrics to W&B for this preference vector
+        try:
+            import wandb
+            if wandb.run:
+                pref_str = "_".join([f"{p:.2f}" for p in preference_vector])
+                # Calculate average metrics across tasks
+                all_metrics = {}
+                for task_name, result in task_results.items():
+                    for metric_name, metric_value in result.metrics.items():
+                        if metric_name not in all_metrics:
+                            all_metrics[metric_name] = []
+                        all_metrics[metric_name].append(metric_value)
+
+                # Log averages
+                avg_log_dict = {"preference_vector_str": pref_str}
+                for metric_name, values in all_metrics.items():
+                    avg_value = sum(values) / len(values)
+                    avg_log_dict[f"eval_avg/{metric_name}"] = avg_value
+                    avg_log_dict[f"eval_pref_{pref_str}/avg_{metric_name}"] = avg_value
+
+                wandb.log(avg_log_dict)
+        except (ImportError, AttributeError):
+            pass
 
     # Step 5: Summarize results
     logger.info("\n" + "=" * 80)

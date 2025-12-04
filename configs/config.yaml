@@ -35,6 +35,7 @@ wandb:
   tags: []
   group: null
   notes: null
+  upload_models: false # Upload trained models as artifacts (can be large)
 
 # Logging
 logging:
