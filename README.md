@@ -1,13 +1,9 @@
+![Python Version 3.13.9](img.shields.io)
 ## About
+- This project is part of my bachelor thesis at the ETH Statistical Machine Learning Lab ([ETH SML](https://sml.inf.ethz.ch/))
+- The main goal of this project is to investigate some hypothesis about the performance of different model classes in the preference aware model merging regime
+- These insights should eventually inform the development of a novel method
 
-## Todos
-
-- Package project into container, e.g. docker -> apptainer
-- Implement EPO search
-
-#### Packages to add
-
-- Peft for LoRAs
 
 ## Install
 
@@ -78,6 +74,7 @@ uv run python scripts/setup_models.py
   - we assume that all models were fine-tuned from a shared pre-trained model to avoid the permutation invariance problem
   - For now we also assume similar hyperparameter & regularization to avoid e.g. magnitude conflicts
   - We assume that we have access to full fine-tuned task vectors, not just LoRAs, to avoid the 'different subspaces' problem when merging different LoRAs (Anisotropic vs. Isotropic)
+  - **Task vectors with different classification head sizes** (due to different num_labels) are zero-padded to match the maximum size before merging, preserving all fine-tuned weights while allowing merging across tasks.
 - These assumptions are necessary to have linear mode connectivity
 - If we would drop the "optimize for given preference" requirement we would have access to a way bigger set of methods
 
@@ -208,6 +205,16 @@ uv pip install -e .
   - [Fusion bench](https://github.com/tanganke/fusion_bench/tree/main): implements many "task arithmetic" methods and has some overarching framework for managing models, datasets and configs
   - [Mergekit](https://github.com/arcee-ai/mergekit): most popular open-source package (6.5k stars); more application focused, does not seem useful except their "Raw PyTorch Model Merging" (mergekit-pytorch) module
   - [Merge bench](https://github.com/uiuctml/MergeBench):
+
+## Todos
+
+- Package project into container, e.g. docker -> apptainer
+- Implement EPO search
+
+#### Packages to add
+
+- Peft for LoRAs
+
 
 ## Deprecated
 

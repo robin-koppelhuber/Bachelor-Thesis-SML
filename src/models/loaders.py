@@ -151,7 +151,21 @@ def apply_task_vector(
     # Add scaled task vector
     for name, param in task_vector.items():
         if name in state_dict:
-            state_dict[name] = state_dict[name] + scaling * param
+            # Handle shape mismatches (e.g., when task vector is from larger model)
+            if state_dict[name].shape == param.shape:
+                # Shapes match - apply directly
+                state_dict[name] = state_dict[name] + scaling * param
+            elif state_dict[name].numel() <= param.numel():
+                # Task vector is larger - slice to match base model size
+                # This happens when merging models with different num_labels
+                flat_param = param.flatten()
+                flat_base = state_dict[name].flatten()
+                # Take only the first N elements from task vector
+                state_dict[name] = (flat_base + scaling * flat_param[:flat_base.numel()]).reshape(state_dict[name].shape)
+                logger.debug(f"  Trimmed {name} from {param.shape} to {state_dict[name].shape}")
+            else:
+                # Base model is larger - this shouldn't happen with our padding approach
+                logger.warning(f"  Skipping {name}: base shape {state_dict[name].shape} > task vector shape {param.shape}")
 
     # Load modified state
     base_model.load_state_dict(state_dict)

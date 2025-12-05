@@ -58,6 +58,66 @@ def unflatten_task_vector(
     return unflattened
 
 
+def pad_task_vectors_to_match(
+    task_vectors_dict: Dict[str, torch.Tensor],
+    target_size: int,
+) -> Dict[str, torch.Tensor]:
+    """
+    Pad task vectors to match target size by appending zeros
+
+    This preserves fine-tuned classification head weights while allowing
+    models with different num_labels to be merged. Smaller task vectors
+    get zero-padded, meaning they contribute nothing to the extra label weights.
+
+    Args:
+        task_vectors_dict: Dictionary mapping task names to flattened task vectors
+        target_size: Target size for all task vectors
+
+    Returns:
+        Dictionary with all task vectors padded to target_size
+    """
+    padded_vectors = {}
+
+    for task_name, task_vector in task_vectors_dict.items():
+        current_size = task_vector.shape[0]
+
+        if current_size < target_size:
+            # Pad with zeros to reach target size
+            padding_size = target_size - current_size
+            padded_vector = torch.cat([
+                task_vector,
+                torch.zeros(padding_size, dtype=task_vector.dtype, device=task_vector.device)
+            ])
+            padded_vectors[task_name] = padded_vector
+            logger.debug(f"  Padded {task_name}: {current_size} -> {target_size} (+{padding_size} zeros)")
+        elif current_size > target_size:
+            raise ValueError(
+                f"Task vector for {task_name} is larger ({current_size}) than target size ({target_size})"
+            )
+        else:
+            # Already correct size
+            padded_vectors[task_name] = task_vector
+
+    return padded_vectors
+
+
+def unpad_task_vector(
+    padded_vector: torch.Tensor,
+    original_size: int,
+) -> torch.Tensor:
+    """
+    Remove padding from a task vector
+
+    Args:
+        padded_vector: Padded task vector
+        original_size: Original size before padding
+
+    Returns:
+        Unpadded task vector
+    """
+    return padded_vector[:original_size]
+
+
 def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     """
     Run proof of concept benchmark
@@ -131,11 +191,14 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
     # Only compute task vectors if needed by the method
     if requires_task_vectors:
+        # First pass: compute task vectors with their natural sizes
+        task_vector_sizes = {}  # Track original sizes for each task
+
         for task_name in cfg.benchmark.tasks:
             logger.info(f"\nProcessing task: {task_name}")
             dataset_cfg = dataset_configs[task_name]
 
-            # Load base model for this task
+            # Load base model for this task (with task-specific num_labels)
             base_model = create_base_model(num_labels=dataset_cfg.num_labels)
 
             # Load fine-tuned model (don't pass num_labels to preserve fine-tuned weights)
@@ -155,6 +218,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             # Store flattened version for merging
             task_vectors_dict[task_name] = flatten_task_vector(task_vector)
+            task_vector_sizes[task_name] = task_vectors_dict[task_name].shape[0]
 
             logger.info(f"  Task vector shape: {task_vectors_dict[task_name].shape}")
 
@@ -162,11 +226,23 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             del base_model, finetuned_model
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-        # Get a template for unflattening later (use first task's structure)
-        first_task = cfg.benchmark.tasks[0]
-        base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
+        # Pad all task vectors to the maximum size
+        max_task_vector_size = max(task_vector_sizes.values())
+        logger.info(f"\nPadding task vectors to maximum size: {max_task_vector_size}")
+        # Keep tensors on their original device (don't force CPU)
+        task_vectors_dict = pad_task_vectors_to_match(task_vectors_dict, max_task_vector_size)
+
+        # Store original sizes for later unpadding
+        task_vector_original_sizes = task_vector_sizes
+
+        # Get a template for unflattening later (use task with max labels for template)
+        # Find task with maximum labels
+        max_labels_task = max(dataset_configs.items(), key=lambda x: x[1].num_labels)[0]
+        logger.info(f"Using {max_labels_task} as template (has maximum num_labels)")
+
+        base_model_template = create_base_model(num_labels=dataset_configs[max_labels_task].num_labels)
         finetuned_model_template = load_model(
-            model_id=dataset_configs[first_task].finetuned_checkpoint,
+            model_id=dataset_configs[max_labels_task].finetuned_checkpoint,
             num_labels=None,  # Don't pass num_labels for fine-tuned models
             cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
             device=device,
@@ -267,6 +343,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     dataset_configs=dataset_configs,
                     preference_vector=preference_array,
                     model_cache_dir=str(Path(cfg.paths.hf_models_cache_base)) if cfg.paths.hf_models_cache_base else None,
+                    finetuned_model_cache_dir=str(Path(cfg.paths.hf_models_cache_finetuned)) if cfg.paths.hf_models_cache_finetuned else None,
                     dataset_cache_dir=str(Path(cfg.paths.hf_datasets_cache)) if cfg.paths.hf_datasets_cache else None,
                     save_path=save_path,
                     epoch_checkpoint_dir=str(Path(cfg.paths.epoch_checkpoints_dir)) if hasattr(cfg.paths, 'epoch_checkpoints_dir') else None,

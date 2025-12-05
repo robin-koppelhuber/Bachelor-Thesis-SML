@@ -546,6 +546,7 @@ class BaseTrainingMethod(ABC):
         dataset_configs: Dict,
         preference_vector: np.ndarray,
         model_cache_dir: Optional[str] = None,
+        finetuned_model_cache_dir: Optional[str] = None,
         dataset_cache_dir: Optional[str] = None,
         save_path: Optional[str] = None,
         epoch_checkpoint_dir: Optional[str] = None,
@@ -568,6 +569,7 @@ class BaseTrainingMethod(ABC):
             dataset_configs: Dataset configurations for loading training data
             preference_vector: Preference weights for each task (will be normalized if normalize_preferences=True)
             model_cache_dir: Optional cache directory for loading base models
+            finetuned_model_cache_dir: Optional cache directory for loading pre-trained single-task models (for utopia point computation)
             dataset_cache_dir: Optional cache directory for loading datasets
             save_path: Optional path to save the trained model
             epoch_checkpoint_dir: Optional directory for epoch-level checkpoints (for resumption)
@@ -646,9 +648,9 @@ class BaseTrainingMethod(ABC):
         # 4. Setup optimizer and scheduler
         optimizer, scheduler = self._setup_optimizer(model, train_dataloaders)
 
-        # 5. Get method-specific training parameters (pass model cache for utopia point computation)
+        # 5. Get method-specific training parameters (pass finetuned model cache for utopia point computation)
         training_kwargs = self._get_training_kwargs(
-            task_names, preference_vector, dataset_configs, cache_dir=model_cache_dir
+            task_names, preference_vector, dataset_configs, cache_dir=finetuned_model_cache_dir
         )
 
         # 6. Setup mixed precision training if enabled

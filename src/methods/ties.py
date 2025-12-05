@@ -90,22 +90,40 @@ class TIESMerging(BaseMergingMethod):
         task_names = sorted(task_vectors.keys())
         n_tasks = len(task_names)
 
-        logger.debug(f"Merging {n_tasks} tasks with TIES (k={self.k})")
+        logger.info(f"Merging {n_tasks} tasks with TIES (k={self.k})")
 
         # Stack task vectors
         task_vector_list = [task_vectors[name] for name in task_names]
+        logger.info(f"  Stacking {n_tasks} task vectors...")
         stacked_vectors = torch.stack(task_vector_list, dim=0)  # (n_tasks, n_params)
+        logger.info(f"  Stacked shape: {stacked_vectors.shape}, device: {stacked_vectors.device}, dtype: {stacked_vectors.dtype}")
 
         # Step 1: Trim - Keep only top-k parameters by magnitude
+        logger.info(f"  Step 1: Trimming (k={self.k})...")
         trimmed_vectors = self._trim(stacked_vectors)
+        logger.info(f"  ✓ Trimming complete")
+
+        # Free original stacked vectors to save memory
+        del stacked_vectors
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Step 2: Elect Sign - Resolve sign conflicts
+        logger.info(f"  Step 2: Electing signs...")
         sign_vector = self._elect_sign(trimmed_vectors, preference_vector)
+        logger.info(f"  ✓ Sign election complete")
 
         # Step 3: Disjoint Merge - Average parameters with same sign
+        logger.info(f"  Step 3: Disjoint merge...")
         merged_vector = self._disjoint_merge(
             trimmed_vectors, sign_vector, preference_vector
         )
+        logger.info(f"  ✓ Disjoint merge complete")
+
+        # Free intermediate tensors
+        del trimmed_vectors, sign_vector
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Apply merge coefficient
         merged_vector = self.lambda_merge * merged_vector
@@ -134,20 +152,48 @@ class TIESMerging(BaseMergingMethod):
             logger.warning(f"k={self.k} results in 0 parameters, keeping at least 1")
             k_params = 1
 
-        logger.debug(f"Trimming to top-{k_params} params ({self.k*100:.1f}%) per task")
+        logger.info(f"    Trimming to top-{k_params:,} params ({self.k*100:.1f}%) per task from {n_params:,} total")
+        logger.info(f"    Device: {task_vectors.device}, Memory: {task_vectors.element_size() * task_vectors.nelement() / 1024**3:.2f} GB")
 
         # For each task vector, keep only top-k by absolute magnitude
+        logger.info(f"    Allocating output tensor ({task_vectors.element_size() * task_vectors.nelement() / 1024**3:.2f} GB)...")
         trimmed_vectors = torch.zeros_like(task_vectors)
+        logger.info(f"    ✓ Allocation complete")
 
         for i in range(n_tasks):
-            # Get absolute values
-            abs_values = torch.abs(task_vectors[i])
+            logger.info(f"    Processing task {i+1}/{n_tasks}...")
 
-            # Find top-k indices
-            _, topk_indices = torch.topk(abs_values, k=k_params, largest=True)
+            # Memory-efficient approach: use sampling-based threshold on large CPU tensors
+            # topk and quantile on large CPU tensors can cause memory issues or segfaults
+            if task_vectors.device.type == 'cpu' and n_params > 10_000_000:
+                logger.info(f"      Using sampling-based threshold (memory-efficient for large CPU tensors)")
+                # Get absolute values
+                abs_values = torch.abs(task_vectors[i])
 
-            # Keep only top-k values (preserve original signs)
-            trimmed_vectors[i, topk_indices] = task_vectors[i, topk_indices]
+                # Sample a subset to estimate threshold (much faster than quantile on full tensor)
+                # Using 5M samples gives better accuracy while still avoiding segfaults
+                sample_size = min(5_000_000, n_params)
+                sample_indices = torch.randperm(n_params)[:sample_size]
+                sampled_abs = abs_values[sample_indices]
+
+                # Find threshold on sample that would keep approximately top-k
+                threshold = torch.quantile(sampled_abs, 1.0 - self.k)
+
+                # Apply threshold to full tensor
+                mask = abs_values >= threshold
+                trimmed_vectors[i] = torch.where(mask, task_vectors[i], torch.zeros_like(task_vectors[i]))
+
+                actual_k = mask.sum().item()
+                logger.info(f"      ✓ Kept {actual_k:,} parameters (target: {k_params:,}, threshold: {threshold:.6f})")
+            else:
+                # Standard topk approach (fast on GPU or small tensors)
+                abs_values = torch.abs(task_vectors[i])
+                logger.info(f"      Finding top-{k_params:,} indices...")
+                _, topk_indices = torch.topk(abs_values, k=k_params, largest=True)
+                logger.info(f"      ✓ Found top-k indices")
+
+                # Keep only top-k values (preserve original signs)
+                trimmed_vectors[i, topk_indices] = task_vectors[i, topk_indices]
 
         return trimmed_vectors
 
@@ -164,8 +210,10 @@ class TIESMerging(BaseMergingMethod):
         Returns:
             Sign vector (-1, 0, or 1 for each parameter)
         """
+        logger.info(f"      Computing sign vector...")
+
         if self.sign_consensus_method == "majority":
-            # Simple majority: sign of sum across tasks
+            # Simple majority: sign of sum across tasks (memory-efficient)
             sign_vector = torch.sign(task_vectors.sum(dim=0))
             logger.debug("Using majority sign election")
 
@@ -177,9 +225,10 @@ class TIESMerging(BaseMergingMethod):
                 device=task_vectors.device,
             ).view(-1, 1)
 
-            # Weighted sum
+            # Weighted sum (accumulate to save memory)
             weighted_sum = (task_vectors * preference_tensor).sum(dim=0)
             sign_vector = torch.sign(weighted_sum)
+            del weighted_sum  # Free memory immediately
             logger.debug("Using preference-weighted sign election")
 
         else:
@@ -188,18 +237,34 @@ class TIESMerging(BaseMergingMethod):
             )
 
         # Resolve zeros (ties) to majority sign
-        # Count positive vs negative occurrences
-        num_positive = (task_vectors > 0).sum(dim=0).float()
-        num_negative = (task_vectors < 0).sum(dim=0).float()
-
-        # Where sign is zero, use majority
+        # Only process where sign is zero to save memory
         zero_mask = sign_vector == 0
-        sign_vector[zero_mask] = torch.where(
-            num_positive[zero_mask] >= num_negative[zero_mask],
-            torch.ones_like(sign_vector[zero_mask]),
-            -torch.ones_like(sign_vector[zero_mask]),
-        )
+        num_zeros = zero_mask.sum().item()
 
+        if num_zeros > 0:
+            logger.info(f"      Resolving {num_zeros:,} tied parameters...")
+            # Count positive vs negative for zero positions only (memory-efficient)
+            # Process each task vector to avoid creating large boolean matrices
+            num_positive_zeros = torch.zeros(num_zeros, dtype=torch.float32, device=task_vectors.device)
+            num_negative_zeros = torch.zeros(num_zeros, dtype=torch.float32, device=task_vectors.device)
+
+            zero_indices = torch.where(zero_mask)[0]
+            for i in range(task_vectors.shape[0]):
+                task_zero_vals = task_vectors[i, zero_indices]
+                num_positive_zeros += (task_zero_vals > 0).float()
+                num_negative_zeros += (task_zero_vals < 0).float()
+
+            # Assign majority sign
+            sign_vector[zero_indices] = torch.where(
+                num_positive_zeros >= num_negative_zeros,
+                torch.ones_like(num_positive_zeros),
+                -torch.ones_like(num_positive_zeros),
+            )
+
+            del num_positive_zeros, num_negative_zeros, zero_indices
+
+        del zero_mask
+        logger.info(f"      ✓ Sign vector computed")
         return sign_vector
 
     def _disjoint_merge(
@@ -219,55 +284,56 @@ class TIESMerging(BaseMergingMethod):
         Returns:
             Merged vector
         """
-        # Create mask for values that agree with elected sign
-        # For positive sign: keep positive values
-        # For negative sign: keep negative values
-        # Shape: (n_tasks, n_params)
-        sign_agreement_mask = torch.where(
-            sign_vector.unsqueeze(0) > 0,
-            task_vectors > 0,  # If elected sign is positive, keep positive values
-            task_vectors < 0,  # If elected sign is negative, keep negative values
-        )
+        logger.info(f"      Computing disjoint merge...")
 
-        # Apply mask to get only agreeing values
-        selected_values = task_vectors * sign_agreement_mask
+        # Initialize result tensors
+        numerator = torch.zeros(task_vectors.shape[1], dtype=task_vectors.dtype, device=task_vectors.device)
+        denominator = torch.zeros(task_vectors.shape[1], dtype=task_vectors.dtype, device=task_vectors.device)
 
+        # Prepare preference weights if needed
         if self.use_preferences:
-            # Weighted average by preference
             preference_tensor = torch.tensor(
                 preference_vector,
                 dtype=task_vectors.dtype,
                 device=task_vectors.device,
-            ).view(-1, 1)
+            )
 
-            # Weight the selected values
-            weighted_values = selected_values * preference_tensor
+        # Process each task vector individually to save memory
+        # This avoids creating large (n_tasks, n_params) boolean masks
+        for i in range(task_vectors.shape[0]):
+            task_vec = task_vectors[i]
 
-            # Sum weighted values
-            numerator = weighted_values.sum(dim=0)
+            # Create agreement mask for this task only (saves memory)
+            # For positive elected sign: keep positive task values
+            # For negative elected sign: keep negative task values
+            pos_sign = sign_vector > 0
+            neg_sign = sign_vector < 0
+            task_pos = task_vec > 0
+            task_neg = task_vec < 0
 
-            # Sum of weights for non-zero values
-            # Only count weights where the value was actually selected (non-zero)
-            weight_mask = sign_agreement_mask.float() * preference_tensor
-            denominator = weight_mask.sum(dim=0)
+            agreement_mask = (pos_sign & task_pos) | (neg_sign & task_neg)
 
-            # Avoid division by zero
+            # Apply mask
+            selected_values = torch.where(agreement_mask, task_vec, torch.zeros_like(task_vec))
+
+            if self.use_preferences:
+                # Weight by preference
+                weight = preference_tensor[i]
+                numerator += selected_values * weight
+                denominator += agreement_mask.float() * weight
+            else:
+                numerator += selected_values
+                denominator += agreement_mask.float()
+
+        # Avoid division by zero
+        if self.use_preferences:
             denominator = torch.clamp(denominator, min=1e-8)
-
-            merged_vector = numerator / denominator
-
             logger.debug("Using preference-weighted disjoint merge")
-
         else:
-            # Simple mean of agreeing values
-            non_zero_counts = sign_agreement_mask.sum(dim=0).float()
-            numerator = selected_values.sum(dim=0)
-
-            # Avoid division by zero
-            denominator = torch.clamp(non_zero_counts, min=1)
-
-            merged_vector = numerator / denominator
-
+            denominator = torch.clamp(denominator, min=1.0)
             logger.debug("Using unweighted disjoint merge")
 
+        merged_vector = numerator / denominator
+
+        logger.info(f"      ✓ Disjoint merge computed")
         return merged_vector
