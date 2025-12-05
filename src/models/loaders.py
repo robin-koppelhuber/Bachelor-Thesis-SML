@@ -145,12 +145,16 @@ def apply_task_vector(
     """
     logger.info(f"Applying task vector (scaling={scaling})...")
 
-    # Get base state
+    # Get base state and device
     state_dict = base_model.state_dict()
+    device = next(base_model.parameters()).device
 
     # Add scaled task vector
     for name, param in task_vector.items():
         if name in state_dict:
+            # Ensure task vector param is on same device as base model
+            param = param.to(device)
+
             # Handle shape mismatches (e.g., when task vector is from larger model)
             if state_dict[name].shape == param.shape:
                 # Shapes match - apply directly

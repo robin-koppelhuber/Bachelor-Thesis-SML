@@ -280,11 +280,38 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             # Generate unique identifier for this training configuration
             # Convert OmegaConf objects to plain Python types for JSON serialization
-            # Exclude checkpoint management params and num_epochs from hash
-            # (num_epochs excluded so you can add more epochs later)
             params = OmegaConf.to_container(cfg.method.params, resolve=True)
-            checkpoint_params = {'save_epoch_checkpoints', 'auto_resume', 'keep_all_epoch_checkpoints', 'num_epochs'}
-            training_params = {k: v for k, v in params.items() if k not in checkpoint_params}
+
+            # Use INCLUSION (whitelist) approach: only include behavior-critical parameters
+            # This prevents cache invalidation from infrastructure/logging/performance changes
+            #
+            # Philosophy: A parameter should be included if and ONLY if changing it would
+            # produce a different final model (different weights/predictions)
+            training_critical_params = {
+                # Core training hyperparameters (affect optimization)
+                'learning_rate',                # Optimizer learning rate
+                'batch_size',                   # Batch size per GPU
+                'weight_decay',                 # L2 regularization strength
+                'gradient_accumulation_steps',  # Effective batch size = batch_size * this
+                'max_grad_norm',                # Gradient clipping threshold
+                # Method-specific algorithm parameters
+                'use_augmented',                # Chebyshev: augmented scalarization
+                'epsilon',                      # Chebyshev: augmentation coefficient
+                'normalize_preferences',        # Normalize preference weights
+                'utopia_point',                 # Chebyshev: manual utopia point
+                'nadir_point',                  # Chebyshev: manual nadir point
+                # Data-affecting parameters (change what data is seen)
+                'use_fp16',                     # Mixed precision (numerical precision)
+                'max_samples_per_task',         # Data subsetting (limits training data)
+                # TIES merging parameters
+                'k',                            # Top-k fraction to keep
+                'lambda_merge',                 # Merge scaling coefficient
+                'scaling_method',               # Parameter scaling strategy
+                'use_preferences',              # Use preference weighting
+                'sign_consensus_method',        # Sign resolution strategy
+            }
+            # Only include parameters that exist in config and are in the critical set
+            training_params = {k: v for k, v in params.items() if k in training_critical_params}
 
             config_str = json.dumps({
                 "method": cfg.method.name,
@@ -412,8 +439,44 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         # For each task, evaluate the merged model
         task_results = {}
 
+        # Setup evaluation cache if enabled
+        use_cache = cfg.benchmark.get("cache_evaluations", False)
+        cache_dir = Path(cfg.paths.evaluation_cache) if use_cache else None
+
         for task_name in cfg.benchmark.tasks:
             logger.info(f"\nEvaluating on task: {task_name}")
+
+            # Check cache first
+            if use_cache:
+                from src.utils.cache import get_cached_evaluation
+
+                # For training-based methods, include model identifier in cache key
+                model_id = config_hash if is_training_based else None
+
+                cached_metrics = get_cached_evaluation(
+                    cache_dir=cache_dir,
+                    method=cfg.method.name,
+                    preference_vector=preference_vector,
+                    task_name=task_name,
+                    metric_names=cfg.benchmark.evaluation.metrics,
+                    model_identifier=model_id,
+                )
+
+                if cached_metrics is not None:
+                    # Use cached result
+                    from src.evaluation.evaluator import EvaluationResult
+
+                    result = EvaluationResult(
+                        task_name=task_name,
+                        metrics=cached_metrics,
+                        num_samples=0,  # Not stored in cache
+                        batch_size=cfg.benchmark.evaluation.batch_size,
+                        device=str(device),
+                    )
+                    task_results[task_name] = result
+                    logger.info(f"  ✓ Using cached evaluation result")
+                    logger.info(f"  {result}")
+                    continue
 
             dataset_cfg = dataset_configs[task_name]
 
@@ -476,6 +539,23 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             task_results[task_name] = result
 
+            # Save to cache if enabled
+            if use_cache:
+                from src.utils.cache import save_evaluation_to_cache
+
+                # For training-based methods, include model identifier in cache key
+                model_id = config_hash if is_training_based else None
+
+                save_evaluation_to_cache(
+                    cache_dir=cache_dir,
+                    method=cfg.method.name,
+                    preference_vector=preference_vector,
+                    task_name=task_name,
+                    metric_names=cfg.benchmark.evaluation.metrics,
+                    metrics=result.metrics,
+                    model_identifier=model_id,
+                )
+
             # Log individual task results to W&B
             try:
                 import wandb
@@ -488,7 +568,8 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     # Also log with preference prefix for easier comparison
                     for metric_name, metric_value in result.metrics.items():
                         log_dict[f"eval_pref_{pref_str}/{task_name}/{metric_name}"] = metric_value
-                    wandb.log(log_dict)
+                    # Use pref_idx as step so different preference vectors show as different points
+                    wandb.log(log_dict, step=pref_idx)
             except (ImportError, AttributeError):
                 pass
 
@@ -530,11 +611,43 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     avg_log_dict[f"eval_avg/{metric_name}"] = avg_value
                     avg_log_dict[f"eval_pref_{pref_str}/avg_{metric_name}"] = avg_value
 
-                wandb.log(avg_log_dict)
+                # Use pref_idx as step so different preference vectors show as different points
+                wandb.log(avg_log_dict, step=pref_idx)
         except (ImportError, AttributeError):
             pass
 
-    # Step 5: Summarize results
+    # Step 5: Generate visualizations
+    logger.info("\n" + "=" * 80)
+    logger.info("Generating Visualizations")
+    logger.info("=" * 80)
+
+    figures = {}
+    try:
+        from src.visualization.generator import generate_all_visualizations
+
+        # Determine output directory for plots
+        output_dir = Path.cwd() / "visualizations"
+        logger.info(f"Saving visualizations to: {output_dir}")
+
+        # Generate all visualizations
+        primary_metric = cfg.benchmark.evaluation.metrics[0] if cfg.benchmark.evaluation.metrics else "f1_macro"
+        figures = generate_all_visualizations(
+            all_results=all_results,
+            task_names=cfg.benchmark.tasks,
+            metric_name=primary_metric,
+            output_dir=output_dir,
+            method_name=cfg.method.name,
+        )
+
+        logger.info(f"✓ Generated {len(figures)} visualizations")
+
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to generate visualizations: {e}")
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
+        logger.warning("Continuing without visualizations. Check the error above for details.")
+
+    # Step 6: Summarize results
     logger.info("\n" + "=" * 80)
     logger.info("Benchmark Complete!")
     logger.info("=" * 80)
@@ -544,6 +657,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         "method": cfg.method.name,
         "tasks": cfg.benchmark.tasks,
         "all_results": all_results,
+        "figures": figures,
         "status": "completed",
     }
 

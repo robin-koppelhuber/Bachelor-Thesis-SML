@@ -26,7 +26,8 @@ def main(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration
     """
-    # Setup logging
+    # Setup logging (Hydra has already changed cwd to output directory)
+    # Log file will be created in Hydra's output directory (e.g., outputs/2024-01-15/10-30-45/)
     log_file = Path.cwd() / f"{cfg.benchmark.name}.log"
     setup_logging(
         log_level=cfg.logging.level,
@@ -49,6 +50,9 @@ def main(cfg: DictConfig) -> None:
     # Initialize W&B
     wandb_run = None
     if cfg.logging.log_to_wandb:
+        # Set wandb dir to output folder (Hydra's cwd)
+        wandb_dir = Path.cwd()
+
         wandb_run = init_wandb(
             config=cfg,
             project=cfg.wandb.project,
@@ -58,9 +62,23 @@ def main(cfg: DictConfig) -> None:
             group=cfg.wandb.group,
             notes=cfg.wandb.notes,
             mode=cfg.wandb.mode,
+            dir=wandb_dir,
         )
         if wandb_run:
             logger.info(f"Initialized W&B run: {wandb_run.name}")
+
+            # Setup custom W&B dashboard
+            try:
+                from src.visualization.wandb_dashboard import setup_wandb_dashboard
+
+                setup_wandb_dashboard(
+                    run=wandb_run,
+                    task_names=cfg.benchmark.tasks,
+                    preference_vectors=cfg.benchmark.preference_vectors,
+                    method_name=cfg.method.name,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to setup W&B dashboard: {e}")
 
     # Print config
     logger.info("\nConfiguration:")
@@ -109,6 +127,74 @@ def main(cfg: DictConfig) -> None:
                     wandb.summary["num_tasks"] = len(results["tasks"])
                     wandb.summary["method"] = results["method"]
                     wandb.summary["status"] = results["status"]
+
+                # Log visualizations to W&B if available
+                if "figures" in results and results["figures"]:
+                    logger.info("Logging visualizations to W&B...")
+                    try:
+                        from src.visualization.wandb_viz import (
+                            create_visualization_artifact,
+                            log_figures_to_wandb,
+                        )
+
+                        # Log figures as images
+                        log_figures_to_wandb(results["figures"])
+
+                        # Create artifact with all saved plot files
+                        viz_dir = Path.cwd() / "visualizations"
+                        if viz_dir.exists():
+                            plot_files = list(viz_dir.glob("**/*.png")) + list(viz_dir.glob("**/*.pdf"))
+                            if plot_files:
+                                create_visualization_artifact(
+                                    plot_files=plot_files,
+                                    artifact_name=f"visualizations_{cfg.method.name}_{cfg.benchmark.name}",
+                                    artifact_type="plots",
+                                    description=f"Visualizations for {cfg.method.name} on {cfg.benchmark.name}",
+                                    metadata={
+                                        "method": cfg.method.name,
+                                        "benchmark": cfg.benchmark.name,
+                                        "num_tasks": len(results["tasks"]),
+                                        "num_preference_vectors": len(results["all_results"]),
+                                    },
+                                )
+                                logger.info(f"✓ Created W&B artifact with {len(plot_files)} plot files")
+
+                    except Exception as e:
+                        logger.error(f"Failed to log visualizations to W&B: {e}")
+
+                # Log dashboard URL and create report template
+                try:
+                    from src.visualization.wandb_dashboard import (
+                        create_report_template,
+                        log_dashboard_url,
+                    )
+
+                    # Log dashboard URL
+                    dashboard_url = log_dashboard_url(
+                        project_name=cfg.wandb.project,
+                        entity=cfg.wandb.entity,
+                        dashboard_name="Benchmark-Dashboard",
+                    )
+                    logger.info(f"\n{'=' * 80}")
+                    logger.info("W&B Dashboard")
+                    logger.info(f"{'=' * 80}")
+                    logger.info(f"View your results at: {wandb_run.get_url()}")
+                    logger.info(f"Suggested dashboard URL: {dashboard_url}")
+
+                    # Create and save report template
+                    report_md = create_report_template(
+                        project_name=cfg.wandb.project,
+                        run_ids=[wandb_run.id],
+                        title=f"{cfg.method.name} Model Merging Benchmark",
+                    )
+
+                    report_path = Path.cwd() / "wandb_report_template.md"
+                    report_path.write_text(report_md)
+                    logger.info(f"\n✓ Report template saved to: {report_path}")
+                    logger.info("  Upload this to W&B Reports: https://docs.wandb.ai/guides/reports")
+
+                except Exception as e:
+                    logger.warning(f"Failed to create report template: {e}")
 
         else:
             raise ValueError(f"Unknown benchmark: {cfg.benchmark.name}")

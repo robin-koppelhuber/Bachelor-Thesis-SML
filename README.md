@@ -3,6 +3,8 @@
 - This project is part of my bachelor thesis at the ETH Statistical Machine Learning Lab ([ETH SML](https://sml.inf.ethz.ch/))
 - The main goal of this project is to investigate some hypothesis about the performance of different model classes in the preference aware model merging regime
 - These insights should eventually inform the development of a novel method
+---
+- Work in progress!
 
 
 ## Install
@@ -235,6 +237,7 @@ uv pip install -e .
 
 #### Packages to add
 
+- Joblib for caching (currently own implementation, getting out of hand)
 - Peft for LoRAs
 
 

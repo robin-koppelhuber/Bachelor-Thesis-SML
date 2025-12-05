@@ -25,6 +25,7 @@ paths:
   hf_models_cache_finetuned: ${paths.checkpoint_dir}/finetuned  # Cache for single-task finetuned models
   hf_models_cache_training: ${paths.checkpoint_dir}/training  # Cache for training-based method models (Chebyshev, EPO)
   epoch_checkpoints_dir: ${paths.checkpoint_dir}/epoch_checkpoints  # Temporary epoch-level checkpoints
+  evaluation_cache: ${paths.checkpoint_dir}/eval_cache  # Cache for evaluation results
 
 # Weights & Biases settings
 wandb:
@@ -36,6 +37,7 @@ wandb:
   group: null
   notes: null
   upload_models: false # Upload trained models as artifacts (can be large)
+  dir: null # Will be set to output dir in main.py
 
 # Logging
 logging:

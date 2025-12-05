@@ -3,6 +3,9 @@ benchmark:
   name: proof_of_concept
   description: "POC benchmark for roberta-base model merging"
 
+  # Caching settings
+  cache_evaluations: true  # Cache evaluation results to skip re-computing
+
   # Tasks to evaluate
   tasks:
     - ag_news

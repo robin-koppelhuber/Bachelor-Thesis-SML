@@ -71,22 +71,22 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         Compute Chebyshev scalarization loss
 
         Chebyshev scalarization minimizes the maximum weighted deviation from the utopia point:
-            minimize: max_i { w_i * (utopia_i - performance_i) }
-
-        Since we're working with losses (lower is better), we use:
             minimize: max_i { w_i * (loss_i - utopia_loss_i) }
+
+        Since we're working with losses (lower is better), the deviation measures how much
+        worse the current loss is compared to the best achievable loss (utopia point).
 
         Args:
             task_losses: Losses for each task (n_tasks,) - positive values, lower is better
             preference_vector: Preference weights (n_tasks,)
-            utopia_point: Best performance per task (n_tasks,) - negative losses from fine-tuned models
+            utopia_point: Best achievable loss per task (n_tasks,) - positive losses from fine-tuned models
 
         Returns:
             Scalar loss value to minimize
         """
         # Weighted deviations from utopia point
-        # utopia_point contains negative losses (e.g., -0.13), task_losses are positive (e.g., 1.4)
-        # deviation = task_loss - utopia_point = 1.4 - (-0.13) = 1.53 (positive, measures degradation)
+        # utopia_point contains best achievable losses (e.g., 0.13), task_losses are current losses (e.g., 1.4)
+        # deviation = task_loss - utopia_point = 1.4 - 0.13 = 1.27 (positive, measures degradation)
         weighted_deviations = preference_vector * (task_losses - utopia_point)
 
         # Chebyshev: minimize maximum weighted deviation
@@ -224,7 +224,8 @@ class ChebyshevFineTuning(BaseTrainingMethod):
                     num_batches += 1
 
             avg_loss = total_loss / num_batches
-            utopia_losses.append(avg_loss)  # Best achievable loss (lower is better)
+            # Store as positive value (will be used in deviation calculation)
+            utopia_losses.append(avg_loss)
 
             logger.info(f"    Average loss: {avg_loss:.4f} (utopia point for this task)")
 
