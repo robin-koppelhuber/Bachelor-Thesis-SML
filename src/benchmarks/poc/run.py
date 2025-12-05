@@ -6,6 +6,7 @@ This module implements the POC benchmark for model merging with roberta-base.
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -15,7 +16,7 @@ from src.data.loaders import load_hf_dataset, preprocess_dataset
 from src.evaluation.evaluator import ClassificationEvaluator, EvaluationResult
 from src.methods.registry import MethodRegistry
 from src.models.loaders import apply_task_vector, compute_task_vector, load_model, load_tokenizer
-from src.utils.logger import get_logger
+from src.utils.logger import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
@@ -279,9 +280,10 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             # Generate unique identifier for this training configuration
             # Convert OmegaConf objects to plain Python types for JSON serialization
-            # Exclude checkpoint management params from hash (they don't affect training results)
+            # Exclude checkpoint management params and num_epochs from hash
+            # (num_epochs excluded so you can add more epochs later)
             params = OmegaConf.to_container(cfg.method.params, resolve=True)
-            checkpoint_params = {'save_epoch_checkpoints', 'auto_resume', 'keep_all_epoch_checkpoints'}
+            checkpoint_params = {'save_epoch_checkpoints', 'auto_resume', 'keep_all_epoch_checkpoints', 'num_epochs'}
             training_params = {k: v for k, v in params.items() if k not in checkpoint_params}
 
             config_str = json.dumps({
@@ -297,6 +299,12 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             model_filename = f"{cfg.method.name}_{config_hash}.safetensors"
             model_cache_path = cache_dir / model_filename if cache_dir else None
 
+            # Check if we're in evaluate-only mode
+            evaluate_only = (
+                hasattr(cfg.benchmark, 'training') and
+                cfg.benchmark.training.get('evaluate_only', False)
+            )
+
             # Check if we should use cached model
             use_cached = (
                 hasattr(cfg.benchmark, 'training') and
@@ -306,7 +314,32 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 not cfg.benchmark.training.get('force_retrain', False)
             )
 
-            if use_cached:
+            if evaluate_only:
+                # Evaluate-only mode: require cached model
+                if not model_cache_path or not model_cache_path.exists():
+                    logger.error(f"Evaluate-only mode enabled but model not found: {model_cache_path}")
+                    logger.error("Please train the model first or disable evaluate_only mode")
+                    raise FileNotFoundError(f"Cached model not found: {model_cache_path}")
+
+                logger.info(f"[EVALUATE ONLY] Loading cached trained model from {model_cache_path}...")
+                # Load cached model and compute task vector
+                base_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
+                base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
+
+                # Load trained model
+                trained_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
+                method._load_trained_model(trained_model, str(model_cache_path), device=device)
+
+                # Compute task vector
+                trained_state_dict = trained_model.state_dict()
+                task_vector_dict = {
+                    name: param.cpu() - base_state_dict[name]
+                    for name, param in trained_state_dict.items()
+                    if name in base_state_dict
+                }
+                merged_flat = flatten_task_vector(task_vector_dict)
+                logger.info("  ✓ Loaded cached model successfully")
+            elif use_cached:
                 logger.info(f"Loading cached trained model from {model_cache_path}...")
                 # Load cached model and compute task vector
                 base_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
@@ -515,3 +548,68 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     }
 
     return results
+
+
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: DictConfig) -> None:
+    """Main entry point for POC benchmark
+
+    Hydra automatically:
+    - Changes working directory to outputs/benchmark_name/YYYY-MM-DD_HH-MM-SS/
+    - Saves config snapshot to .hydra/ subdirectory
+    - Handles command-line overrides
+    """
+
+    # Setup logging (file will be created in Hydra's output directory)
+    log_file = Path("proof_of_concept.log") if cfg.logging.log_to_file else None
+    setup_logging(
+        log_level=cfg.logging.level,
+        log_file=log_file,
+        console_format=cfg.logging.console_format,
+    )
+
+    # Setup device
+    if cfg.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(cfg.device)
+
+    # Setup W&B if enabled
+    if cfg.wandb.enabled:
+        from src.utils.wandb_utils import init_wandb
+        init_wandb(
+            config=cfg,
+            name=f"{cfg.benchmark.name}_{cfg.method.name}",
+            tags=cfg.wandb.tags + [cfg.benchmark.name, cfg.method.name],
+        )
+
+    try:
+        # Run benchmark
+        results = run_poc_benchmark(cfg, device)
+
+        # Finish W&B run if enabled
+        if cfg.wandb.enabled:
+            try:
+                import wandb
+                if wandb.run:
+                    wandb.finish()
+            except (ImportError, AttributeError):
+                pass
+
+    except Exception as e:
+        logger.error(f"Benchmark failed with error: {e}")
+
+        # Finish W&B run with failed status
+        if cfg.wandb.enabled:
+            try:
+                import wandb
+                if wandb.run:
+                    wandb.finish(exit_code=1)
+            except (ImportError, AttributeError):
+                pass
+
+        raise
+
+
+if __name__ == "__main__":
+    main()

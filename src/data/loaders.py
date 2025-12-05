@@ -103,7 +103,7 @@ def preprocess_dataset(
                 padding=padding,
             )
 
-        # Add labels
+        # Add labels (ensure they're in the right format for DataLoader)
         tokenized["labels"] = examples[label_column]
 
         return tokenized
@@ -114,6 +114,11 @@ def preprocess_dataset(
         batched=True,
         remove_columns=dataset.column_names,
     )
+
+    # Set format to PyTorch tensors for compatibility with DataLoader
+    if not hasattr(processed, '__iter__') or hasattr(processed, 'set_format'):
+        # Only set format for non-streaming datasets
+        processed.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
     # Log preprocessing completion (streaming datasets don't support len())
     try:

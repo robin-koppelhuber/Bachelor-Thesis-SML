@@ -27,6 +27,28 @@ uv run python main.py
 uv run python main.py benchmark=poc -m method=averaging,ties device=cuda
 ```
 
+#### Evaluation-Only Mode (Training Methods)
+
+For training-based methods (Chebyshev, EPO), you can re-evaluate saved models without retraining:
+
+```bash
+# Enable evaluation-only mode
+uv run python -m src.benchmarks.poc.run method=chebyshev benchmark.training.evaluate_only=true
+
+# Or evaluate a specific saved model
+uv run python -m src.benchmarks.poc.evaluate_saved model_path=checkpoints/training/model.safetensors
+```
+
+Models are cached in `checkpoints/training/` with filenames like `chebyshev_a1b2c3d4e5f6.safetensors`
+
+#### Sync W&B Artifacts
+
+Download all models and artifacts from a W&B run:
+
+```bash
+uv run python scripts/sync_wandb_artifacts.py --entity YOUR_ENTITY --project YOUR_PROJECT --run-id RUN_ID
+```
+
 ### Download Datasets and Models
 
 Before running benchmarks, download the required data:
