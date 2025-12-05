@@ -17,20 +17,22 @@ logger = logging.getLogger(__name__)
 
 def load_model(
     model_id: str,
-    num_labels: int,
+    num_labels: Optional[int] = None,
     cache_dir: Optional[Path] = None,
     device: Optional[torch.device] = None,
     torch_dtype: str = "auto",
+    ignore_mismatched_sizes: bool = False,
 ) -> PreTrainedModel:
     """
     Load model from HuggingFace
 
     Args:
         model_id: HuggingFace model ID
-        num_labels: Number of classification labels
+        num_labels: Number of classification labels (optional - if None, uses checkpoint's config)
         cache_dir: Optional cache directory
         device: Optional device to load model on
         torch_dtype: PyTorch dtype ('auto', 'float32', 'float16', 'bfloat16')
+        ignore_mismatched_sizes: Whether to ignore size mismatches (for fine-tuned models)
 
     Returns:
         Loaded model
@@ -49,12 +51,20 @@ def load_model(
     else:
         dtype = None
 
-    # Load model
+    # Load model - only pass num_labels if explicitly provided
+    load_kwargs = {
+        "cache_dir": str(cache_dir) if cache_dir else None,
+        "torch_dtype": dtype,
+        "ignore_mismatched_sizes": ignore_mismatched_sizes,
+    }
+
+    # Only add num_labels if provided (don't pass it for fine-tuned models)
+    if num_labels is not None:
+        load_kwargs["num_labels"] = num_labels
+
     model = AutoModelForSequenceClassification.from_pretrained(
         model_id,
-        num_labels=num_labels,
-        cache_dir=str(cache_dir) if cache_dir else None,
-        torch_dtype=dtype,
+        **load_kwargs,
     )
 
     if device is not None:

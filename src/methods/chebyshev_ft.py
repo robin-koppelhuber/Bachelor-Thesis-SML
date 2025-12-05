@@ -94,7 +94,8 @@ class ChebyshevFineTuning(BaseTrainingMethod):
 
         # Augmented Chebyshev: add sum term for smoothness
         if self.use_augmented:
-            chebyshev_loss += self.epsilon * weighted_deviations.sum()
+            # Use non-in-place addition to avoid modifying tensor in computation graph
+            chebyshev_loss = chebyshev_loss + self.epsilon * weighted_deviations.sum()
 
         return chebyshev_loss
 
@@ -170,11 +171,11 @@ class ChebyshevFineTuning(BaseTrainingMethod):
 
             logger.info(f"  Evaluating {task_name} ({finetuned_checkpoint})...")
 
-            # Load fine-tuned model
+            # Load fine-tuned model (don't pass num_labels to preserve fine-tuned weights)
             tokenizer = load_tokenizer(finetuned_checkpoint, cache_dir=cache_dir)
             model = load_model(
                 model_id=finetuned_checkpoint,
-                num_labels=task_cfg.num_labels,
+                num_labels=None,  # Don't pass num_labels for fine-tuned models
                 device=device,
                 cache_dir=cache_dir,
             )
@@ -215,7 +216,7 @@ class ChebyshevFineTuning(BaseTrainingMethod):
             total_loss = 0.0
             num_batches = 0
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 for batch in dataloader:
                     batch = {k: v.to(device) for k, v in batch.items()}
                     outputs = model(**batch)

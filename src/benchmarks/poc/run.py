@@ -138,11 +138,11 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             # Load base model for this task
             base_model = create_base_model(num_labels=dataset_cfg.num_labels)
 
-            # Load fine-tuned model
+            # Load fine-tuned model (don't pass num_labels to preserve fine-tuned weights)
             logger.info(f"  Loading fine-tuned model: {dataset_cfg.finetuned_checkpoint}")
             finetuned_model = load_model(
                 model_id=dataset_cfg.finetuned_checkpoint,
-                num_labels=dataset_cfg.num_labels,
+                num_labels=None,  # Don't pass num_labels for fine-tuned models
                 cache_dir=Path(cfg.paths.hf_models_cache_finetuned)
                 if cfg.paths.hf_models_cache_finetuned
                 else None,
@@ -167,7 +167,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
         finetuned_model_template = load_model(
             model_id=dataset_configs[first_task].finetuned_checkpoint,
-            num_labels=dataset_configs[first_task].num_labels,
+            num_labels=None,  # Don't pass num_labels for fine-tuned models
             cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
             device=device,
             torch_dtype=cfg.model.loading.torch_dtype,
@@ -287,7 +287,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
             finetuned_model_template = load_model(
                 model_id=dataset_configs[first_task].finetuned_checkpoint,
-                num_labels=dataset_configs[first_task].num_labels,
+                num_labels=None,  # Don't pass num_labels for fine-tuned models
                 cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
                 device=device,
                 torch_dtype=cfg.model.loading.torch_dtype,
@@ -354,6 +354,8 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 tokenizer=tokenizer,
                 device=str(device),
                 batch_size=cfg.benchmark.evaluation.batch_size,
+                use_torch_compile=cfg.model.optimization.get("use_torch_compile", True),
+                torch_compile_mode=cfg.model.optimization.get("torch_compile_mode_eval", "default"),
             )
 
             result = evaluator.evaluate(

@@ -78,6 +78,8 @@ class BaseTrainingMethod(ABC):
         max_grad_norm: float = 1.0,
         normalize_preferences: bool = True,
         use_fp16: bool = False,
+        use_torch_compile: bool = True,
+        torch_compile_mode: str = "default",
         dataloader_num_workers: int = 0,
         max_samples_per_task: Optional[int] = None,
         use_streaming: bool = False,
@@ -99,6 +101,8 @@ class BaseTrainingMethod(ABC):
             max_grad_norm: Maximum gradient norm for clipping (0 = no clipping)
             normalize_preferences: Whether to normalize preference vector
             use_fp16: Use mixed precision training (fp16) for memory efficiency
+            use_torch_compile: Enable torch.compile() for performance (PyTorch 2.0+)
+            torch_compile_mode: Compilation mode (default, reduce-overhead, max-autotune)
             dataloader_num_workers: Number of workers for DataLoader (0 = main process only)
             max_samples_per_task: Maximum samples per task (None = use all). Reduces RAM usage.
             use_streaming: Use streaming datasets (loads data on-the-fly, minimal RAM)
@@ -117,6 +121,8 @@ class BaseTrainingMethod(ABC):
         self.max_grad_norm = max_grad_norm
         self.normalize_preferences = normalize_preferences
         self.use_fp16 = use_fp16
+        self.use_torch_compile = use_torch_compile
+        self.torch_compile_mode = torch_compile_mode
         self.dataloader_num_workers = dataloader_num_workers
         self.max_samples_per_task = max_samples_per_task
         self.use_streaming = use_streaming
@@ -496,16 +502,15 @@ class BaseTrainingMethod(ABC):
                     optimizer.step()
 
                 scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
             total_loss += multi_task_loss.item()
             num_steps += 1
-            step += 1
 
-            # Periodic logging
-            if step % 100 == 0 or step == min_steps - 1:
+            # Periodic logging (before incrementing step to get correct count)
+            if (step + 1) % 100 == 0 or step == min_steps - 1:
                 logger.info(
-                    f"  Step {step}/{min_steps} - "
+                    f"  Step {step+1}/{min_steps} - "
                     f"Loss: {multi_task_loss.item():.4f} - "
                     f"Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
                 )
@@ -521,11 +526,16 @@ class BaseTrainingMethod(ABC):
                         for task_name, task_loss in zip(task_names, losses_tensor):
                             log_dict[f"train/task_loss/{task_name}"] = task_loss.item()
 
-                        # Calculate global step across all epochs
-                        global_step = epoch * min_steps + step
+                        # Calculate global step (step is 0-indexed, so add 1 for display)
+                        global_step = epoch * min_steps + step + 1
                         wandb.log(log_dict, step=global_step)
-                except (ImportError, AttributeError):
-                    pass
+                        logger.debug(f"Logged to W&B: step={global_step}, metrics={list(log_dict.keys())}")
+                except (ImportError, AttributeError) as e:
+                    logger.debug(f"W&B not available: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to log to W&B: {e}")
+
+            step += 1
 
         avg_loss = total_loss / num_steps if num_steps > 0 else 0.0
         return avg_loss
@@ -609,6 +619,28 @@ class BaseTrainingMethod(ABC):
             model.gradient_checkpointing_enable()
             logger.info("Gradient checkpointing enabled for memory efficiency")
 
+        # Enable cuDNN benchmark for faster training (CUDA only, fixed input sizes)
+        if device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
+            logger.info("cuDNN benchmark mode enabled for performance")
+
+        # Compile model for improved performance (PyTorch 2.0+)
+        # Note: Windows has limited Triton support, so we skip compilation there
+        if self.use_torch_compile:
+            try:
+                import platform
+                if platform.system() != "Windows":
+                    # Linux/Mac: use configured compilation mode
+                    model = torch.compile(model, mode=self.torch_compile_mode)
+                    logger.info(f"Model compiled with torch.compile(mode='{self.torch_compile_mode}')")
+                else:
+                    # Windows: Skip torch.compile due to Triton limitations
+                    logger.info("Skipping torch.compile() on Windows (limited Triton support)")
+            except Exception as e:
+                logger.warning(f"torch.compile() not available or failed: {e}")
+        else:
+            logger.info("torch.compile() disabled via config")
+
         base_state_dict = copy.deepcopy(model.state_dict())
 
         # 4. Setup optimizer and scheduler
@@ -659,13 +691,19 @@ class BaseTrainingMethod(ABC):
             try:
                 import wandb
                 if wandb.run:
-                    wandb.log({
+                    epoch_log_dict = {
                         "train/epoch": epoch + 1,
                         "train/loss": avg_loss,
                         "train/learning_rate": optimizer.param_groups[0]['lr'],
-                    }, step=epoch + 1)
-            except (ImportError, AttributeError):
-                pass  # W&B not available or not initialized
+                    }
+                    wandb.log(epoch_log_dict, step=epoch + 1)
+                    logger.info(f"Logged epoch {epoch+1} to W&B")
+                else:
+                    logger.warning("W&B imported but wandb.run is None - logging disabled")
+            except (ImportError, AttributeError) as e:
+                logger.debug(f"W&B not available: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to log epoch to W&B: {e}")
 
             # Save epoch checkpoint if enabled
             if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:

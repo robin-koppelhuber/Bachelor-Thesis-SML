@@ -37,6 +37,8 @@ class ClassificationEvaluator:
         tokenizer: PreTrainedTokenizer,
         device: str = "cuda",
         batch_size: int = 32,
+        use_torch_compile: bool = True,
+        torch_compile_mode: str = "default",
     ):
         """
         Initialize evaluator
@@ -46,6 +48,8 @@ class ClassificationEvaluator:
             tokenizer: Tokenizer for the model
             device: Device to run evaluation on
             batch_size: Batch size for evaluation
+            use_torch_compile: Enable torch.compile() for performance (PyTorch 2.0+)
+            torch_compile_mode: Compilation mode (default, reduce-overhead, max-autotune)
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -54,6 +58,23 @@ class ClassificationEvaluator:
 
         # Model is already on device from load_model(), just set to eval mode
         self.model.eval()
+
+        # Compile model for faster inference (PyTorch 2.0+)
+        # Note: Windows has limited Triton support, so we skip compilation there
+        if use_torch_compile:
+            try:
+                import platform
+                if platform.system() != "Windows":
+                    # Linux/Mac: use configured compilation mode
+                    self.model = torch.compile(self.model, mode=torch_compile_mode)
+                    logger.info(f"Evaluation model compiled with torch.compile(mode='{torch_compile_mode}')")
+                else:
+                    # Windows: Skip torch.compile due to Triton limitations
+                    logger.debug("Skipping torch.compile() on Windows (limited Triton support)")
+            except Exception as e:
+                logger.debug(f"torch.compile() not available or failed for evaluation: {e}")
+        else:
+            logger.debug("torch.compile() disabled via config for evaluation")
 
     def evaluate(
         self,
@@ -108,7 +129,7 @@ class ClassificationEvaluator:
         all_preds = []
         all_labels = []
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for batch in dataloader:
                 # Move batch to device
                 input_ids = batch["input_ids"].to(self.device)

@@ -11,6 +11,12 @@ model:
     device_map: null # null, auto, or custom device mapping
     trust_remote_code: false
 
+  # Performance optimization
+  optimization:
+    use_torch_compile: false # Enable torch.compile() for performance (PyTorch 2.0+, not supported on Windows)
+    torch_compile_mode: default # default, reduce-overhead, max-autotune (for training)
+    torch_compile_mode_eval: default # Compile mode for evaluation/inference
+
   # Task vector computation
   task_vectors:
     computation_method: subtract # subtract = fine_tuned - base
