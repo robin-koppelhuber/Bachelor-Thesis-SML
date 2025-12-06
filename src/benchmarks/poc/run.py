@@ -4,7 +4,7 @@ This module implements the POC benchmark for model merging with roberta-base.
 """
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional, Tuple
 
 import hydra
 import numpy as np
@@ -160,7 +160,7 @@ def load_cached_trained_model_as_task_vector(
     return flatten_task_vector(task_vector_dict)
 
 
-def perform_evaluation(
+def get_predictions_and_labels(
     merged_task_vector: Dict[str, torch.Tensor],
     task_name: str,
     dataset_cfg: DictConfig,
@@ -168,11 +168,13 @@ def perform_evaluation(
     create_base_model_fn,
     device: torch.device,
     cfg: DictConfig,
-) -> EvaluationResult:
+    num_samples: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Perform evaluation on a single task
+    Get model predictions and true labels for a task
 
-    This function is wrapped by Joblib cache for automatic result caching.
+    This is the base function that should be cached, as it requires model inference.
+    Metrics are computed from predictions/labels without re-running inference.
 
     Args:
         merged_task_vector: Merged task vector to evaluate
@@ -182,9 +184,10 @@ def perform_evaluation(
         create_base_model_fn: Function to create base model
         device: Device to run on
         cfg: Full configuration
+        num_samples: Optional limit on number of samples (for cache key)
 
     Returns:
-        Evaluation result
+        Tuple of (predictions, labels) as numpy arrays
     """
     # Create base model
     merged_model = create_base_model_fn(num_labels=dataset_cfg.num_labels)
@@ -213,9 +216,9 @@ def perform_evaluation(
     )
 
     # Limit samples if specified
-    if cfg.benchmark.evaluation.num_samples:
+    if num_samples:
         test_dataset_processed = test_dataset_processed.select(
-            range(min(cfg.benchmark.evaluation.num_samples, len(test_dataset_processed)))
+            range(min(num_samples, len(test_dataset_processed)))
         )
 
     # Create dataloader
@@ -225,7 +228,7 @@ def perform_evaluation(
         shuffle=False,
     )
 
-    # Evaluate
+    # Get predictions
     evaluator = ClassificationEvaluator(
         model=merged_model,
         tokenizer=tokenizer,
@@ -235,15 +238,96 @@ def perform_evaluation(
         torch_compile_mode=cfg.model.optimization.get("torch_compile_mode_eval", "default"),
     )
 
-    result = evaluator.evaluate(
-        dataloader=test_dataloader,
-        task_name=task_name,
-        metrics=cfg.benchmark.evaluation.metrics,
-    )
+    # Run inference to get predictions and labels
+    predictions, labels = evaluator.get_predictions(test_dataloader)
 
     # Clean up
     del merged_model, test_dataset, test_dataset_processed, test_dataloader
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    return predictions, labels
+
+
+def compute_metrics_from_predictions(
+    predictions: np.ndarray,
+    labels: np.ndarray,
+    task_name: str,
+    metrics: List[str],
+) -> EvaluationResult:
+    """
+    Compute metrics from cached predictions and labels
+
+    This function is fast and doesn't require model inference, so we can
+    compute different metrics without invalidating the prediction cache.
+
+    Args:
+        predictions: Predicted labels
+        labels: True labels
+        task_name: Name of the task
+        metrics: List of metrics to compute
+
+    Returns:
+        Evaluation result with computed metrics
+    """
+    from src.evaluation.metrics import compute_classification_metrics
+
+    metric_values = compute_classification_metrics(predictions, labels, metrics)
+
+    return EvaluationResult(
+        task_name=task_name,
+        metrics=metric_values,
+        predictions=predictions,
+        labels=labels,
+    )
+
+
+def perform_evaluation(
+    merged_task_vector: Dict[str, torch.Tensor],
+    task_name: str,
+    dataset_cfg: DictConfig,
+    tokenizer,
+    create_base_model_fn,
+    device: torch.device,
+    cfg: DictConfig,
+) -> EvaluationResult:
+    """
+    Perform evaluation on a single task
+
+    This function combines cached prediction retrieval with metric computation.
+    Predictions are cached separately from metrics, so changing the metrics list
+    doesn't invalidate the expensive inference cache.
+
+    Args:
+        merged_task_vector: Merged task vector to evaluate
+        task_name: Name of the task
+        dataset_cfg: Dataset configuration
+        tokenizer: Tokenizer
+        create_base_model_fn: Function to create base model
+        device: Device to run on
+        cfg: Full configuration
+
+    Returns:
+        Evaluation result
+    """
+    # Get predictions from cache
+    predictions, labels = get_predictions_and_labels(
+        merged_task_vector=merged_task_vector,
+        task_name=task_name,
+        dataset_cfg=dataset_cfg,
+        tokenizer=tokenizer,
+        create_base_model_fn=create_base_model_fn,
+        device=device,
+        cfg=cfg,
+        num_samples=cfg.benchmark.evaluation.num_samples,
+    )
+
+    # Compute metrics from predictions
+    result = compute_metrics_from_predictions(
+        predictions=predictions,
+        labels=labels,
+        task_name=task_name,
+        metrics=cfg.benchmark.evaluation.metrics,
+    )
 
     return result
 
@@ -577,19 +661,20 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 # For training-based methods, include model identifier in cache key
                 model_id = config_hash if is_training_based else None
 
-                # Create cached version of evaluation function
-                # Joblib automatically hashes merged_task_vector and all arguments
+                # Create cached version of get_predictions_and_labels
+                # This caches the expensive inference step separately from metrics computation
                 @memory.cache
-                def _cached_perform_evaluation(
+                def _cached_get_predictions(
                     task_vec_hash,  # Hash of task vector for cache key
                     method_name,
                     pref_vec_tuple,
                     task,
                     model_id_param,
+                    num_samples_param,
                 ):
-                    """Cached wrapper - Joblib handles all caching automatically"""
-                    logger.info(f"  Cache miss - performing evaluation for {task}")
-                    return perform_evaluation(
+                    """Cached wrapper for prediction inference - Joblib handles caching automatically"""
+                    logger.info(f"  Cache miss - running inference for {task}")
+                    return get_predictions_and_labels(
                         merged_task_vector=merged_task_vector,
                         task_name=task,
                         dataset_cfg=dataset_cfg,
@@ -597,6 +682,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                         create_base_model_fn=create_base_model,
                         device=device,
                         cfg=cfg,
+                        num_samples=num_samples_param,
                     )
 
                 # Create deterministic hash of task vector for cache key
@@ -604,12 +690,23 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 task_vec_bytes = str(sorted(merged_task_vector.items())).encode()
                 task_vec_hash = hashlib.md5(task_vec_bytes).hexdigest()[:12]
 
-                result = _cached_perform_evaluation(
+                # Get predictions from cache (inference step)
+                predictions, labels = _cached_get_predictions(
                     task_vec_hash=task_vec_hash,
                     method_name=cfg.method.name,
                     pref_vec_tuple=tuple(preference_vector),
                     task=task_name,
                     model_id_param=model_id,
+                    num_samples_param=cfg.benchmark.evaluation.num_samples,
+                )
+
+                # Compute metrics from cached predictions (fast step - NOT cached)
+                # This allows adding new metrics without re-running inference
+                result = compute_metrics_from_predictions(
+                    predictions=predictions,
+                    labels=labels,
+                    task_name=task_name,
+                    metrics=cfg.benchmark.evaluation.metrics,
                 )
 
                 logger.info(f"  ✓ {result}")
@@ -628,23 +725,6 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             task_results[task_name] = result
 
-            # Log individual task results to W&B
-            try:
-                import wandb
-                if wandb.run:
-                    # Create preference vector string for grouping
-                    pref_str = "_".join([f"{p:.2f}" for p in preference_vector])
-                    log_dict = {}
-                    for metric_name, metric_value in result.metrics.items():
-                        log_dict[f"eval/{task_name}/{metric_name}"] = metric_value
-                    # Also log with preference prefix for easier comparison
-                    for metric_name, metric_value in result.metrics.items():
-                        log_dict[f"eval_pref_{pref_str}/{task_name}/{metric_name}"] = metric_value
-                    # Use pref_idx as step so different preference vectors show as different points
-                    wandb.log(log_dict, step=pref_idx)
-            except (ImportError, AttributeError):
-                pass
-
         # Store results for this preference vector
         all_results.append(
             {
@@ -658,31 +738,6 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         logger.info(f"Results for preference vector {preference_vector}:")
         for task_name, result in task_results.items():
             logger.info(f"  {task_name}: {result.metrics}")
-
-        # Log aggregate metrics to W&B for this preference vector
-        try:
-            import wandb
-            if wandb.run:
-                pref_str = "_".join([f"{p:.2f}" for p in preference_vector])
-                # Calculate average metrics across tasks
-                all_metrics = {}
-                for task_name, result in task_results.items():
-                    for metric_name, metric_value in result.metrics.items():
-                        if metric_name not in all_metrics:
-                            all_metrics[metric_name] = []
-                        all_metrics[metric_name].append(metric_value)
-
-                # Log averages
-                avg_log_dict = {"preference_vector_str": pref_str}
-                for metric_name, values in all_metrics.items():
-                    avg_value = sum(values) / len(values)
-                    avg_log_dict[f"eval_avg/{metric_name}"] = avg_value
-                    avg_log_dict[f"eval_pref_{pref_str}/avg_{metric_name}"] = avg_value
-
-                # Use pref_idx as step so different preference vectors show as different points
-                wandb.log(avg_log_dict, step=pref_idx)
-        except (ImportError, AttributeError):
-            pass
 
     # Step 5: Generate visualizations
     logger.info("\n" + "=" * 80)
@@ -716,7 +771,26 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         logger.warning("Continuing without visualizations. Check the error above for details.")
 
-    # Step 6: Summarize results
+    # Step 6: Log results to W&B as bar charts
+    try:
+        import wandb
+        if wandb.run:
+            logger.info("\n" + "=" * 80)
+            logger.info("Logging results to W&B as bar charts")
+            logger.info("=" * 80)
+
+            from src.visualization.wandb_viz import log_benchmark_results_as_bar_charts
+
+            log_benchmark_results_as_bar_charts(
+                all_results=all_results,
+                task_names=cfg.benchmark.tasks,
+                metrics=cfg.benchmark.evaluation.metrics,
+            )
+            logger.info("✓ Logged benchmark results as bar charts to W&B")
+    except Exception as e:
+        logger.warning(f"Failed to log bar charts to W&B: {e}")
+
+    # Step 7: Summarize results
     logger.info("\n" + "=" * 80)
     logger.info("Benchmark Complete!")
     logger.info("=" * 80)

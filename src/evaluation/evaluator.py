@@ -1,9 +1,10 @@
 """Model evaluation framework"""
 
 import logging
-from dataclasses import dataclass
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from transformers import PreTrainedModel, PreTrainedTokenizer
@@ -19,9 +20,11 @@ class EvaluationResult:
 
     task_name: str
     metrics: Dict[str, float]
-    num_samples: int
-    batch_size: int
-    device: str
+    num_samples: int = 0
+    batch_size: int = 0
+    device: str = ""
+    predictions: Optional[np.ndarray] = None
+    labels: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in self.metrics.items()])
@@ -115,6 +118,19 @@ class ClassificationEvaluator:
 
         logger.info(f"  {result}")
         return result
+
+    def get_predictions(self, dataloader: DataLoader) -> tuple:
+        """
+        Get model predictions and labels for entire dataset (public method for caching)
+
+        Args:
+            dataloader: DataLoader for the dataset
+
+        Returns:
+            Tuple of (predictions, labels) as numpy arrays
+        """
+        predictions, labels = self._compute_predictions(dataloader)
+        return predictions.numpy(), labels.numpy()
 
     def _compute_predictions(self, dataloader: DataLoader) -> tuple:
         """

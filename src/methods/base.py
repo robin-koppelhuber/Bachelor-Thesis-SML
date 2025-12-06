@@ -357,6 +357,7 @@ class BaseTrainingMethod(ABC):
         model: torch.nn.Module,
         task_dataloaders: Dict,
         task_names: list,
+        dataset_configs: Dict,
         optimizer: torch.optim.Optimizer,
         scheduler: Any,
         preference_vector: np.ndarray,
@@ -371,6 +372,7 @@ class BaseTrainingMethod(ABC):
             model: Model to train
             task_dataloaders: Dataloaders for each task
             task_names: List of task names (sorted)
+            dataset_configs: Dataset configurations for each task (to get num_labels)
             optimizer: Optimizer
             scheduler: Learning rate scheduler
             preference_vector: Preference weights for tasks
@@ -447,9 +449,25 @@ class BaseTrainingMethod(ABC):
                     # Move batch to device
                     batch = {k: v.to(model.device) for k, v in batch.items()}
 
-                    # Forward pass
+                    # Get task-specific num_labels
+                    task_num_labels = dataset_configs[task_name].num_labels
+
+                    # Forward pass without computing loss (we'll compute it manually)
+                    labels = batch.pop("labels")
                     outputs = model(**batch)
-                    temp_task_losses.append(outputs.loss)
+
+                    # Mask logits to only use the first task_num_labels classes
+                    # This ensures tasks with fewer labels don't have their loss
+                    # contaminated by untrained/random weights for extra classes
+                    logits = outputs.logits[:, :task_num_labels]
+
+                    # Compute cross-entropy loss with masked logits
+                    loss_fct = torch.nn.CrossEntropyLoss()
+                    task_loss = loss_fct(logits, labels)
+                    temp_task_losses.append(task_loss)
+
+                    # Restore labels to batch for potential later use
+                    batch["labels"] = labels
 
                 # If we couldn't get batches from all tasks, stop
                 if not all_batches_available:
@@ -679,6 +697,7 @@ class BaseTrainingMethod(ABC):
                 model=model,
                 task_dataloaders=train_dataloaders,
                 task_names=task_names,
+                dataset_configs=dataset_configs,
                 optimizer=optimizer,
                 scheduler=scheduler,
                 preference_vector=preference_vector,

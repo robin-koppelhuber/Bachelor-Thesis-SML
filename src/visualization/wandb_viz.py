@@ -288,3 +288,76 @@ def log_preference_alignment_to_wandb(
         logger.warning("wandb not installed, skipping alignment logging")
     except Exception as e:
         logger.error(f"Failed to log preference alignment to W&B: {e}")
+
+
+def log_benchmark_results_as_bar_charts(
+    all_results: List[Dict],
+    task_names: List[str],
+    metrics: List[str],
+) -> None:
+    """
+    Log benchmark results as bar charts instead of step-based line graphs
+
+    This creates proper bar chart visualizations for each metric, showing
+    performance across tasks and preference vectors in a more intuitive way.
+
+    Args:
+        all_results: List of result dictionaries, one per preference vector
+                    Each dict has: preference_vector, task_results
+        task_names: List of task names
+        metrics: List of metric names to visualize
+    """
+    try:
+        import wandb
+
+        if not wandb.run:
+            logger.warning("W&B run not initialized, skipping bar chart logging")
+            return
+
+        # Create a table for each metric
+        for metric_name in metrics:
+            # Prepare table data: one row per (preference_vector, task) combination
+            table_data = []
+
+            for result in all_results:
+                pref_vec = result["preference_vector"]
+                pref_str = "[" + ", ".join([f"{p:.2f}" for p in pref_vec]) + "]"
+                task_results = result["task_results"]
+
+                for task_name in task_names:
+                    metric_value = task_results[task_name].metrics.get(metric_name, 0.0)
+                    table_data.append([
+                        pref_str,
+                        task_name,
+                        float(metric_value)
+                    ])
+
+            # Create W&B table
+            table = wandb.Table(
+                columns=["preference_vector", "task", metric_name],
+                data=table_data,
+            )
+
+            # Log as bar chart
+            wandb.log({
+                f"benchmark_results/{metric_name}_by_task": wandb.plot.bar(
+                    table,
+                    "task",
+                    metric_name,
+                    title=f"{metric_name.replace('_', ' ').title()} by Task"
+                ),
+                f"benchmark_results/{metric_name}_by_preference": wandb.plot.bar(
+                    table,
+                    "preference_vector",
+                    metric_name,
+                    title=f"{metric_name.replace('_', ' ').title()} by Preference Vector"
+                ),
+                f"benchmark_results/{metric_name}_table": table,
+            })
+
+        logger.info(f"Logged {len(metrics)} benchmark result bar charts to W&B")
+
+    except ImportError:
+        logger.warning("wandb not installed, skipping bar chart logging")
+    except Exception as e:
+        logger.error(f"Failed to log bar charts to W&B: {e}")

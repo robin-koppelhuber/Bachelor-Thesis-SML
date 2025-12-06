@@ -31,11 +31,21 @@ benchmark:
       - accuracy
       - f1_macro
       - f1_weighted
+      - f1_micro
+      - precision_macro
+      - recall_macro
+      - mcc  # Matthews Correlation Coefficient
+      - cohen_kappa  # Cohen's Kappa score
 
   # Execution mode (3 options):
   # - train_eval: Train & cache & evaluate & cache; reuse cached models if they exist (DEFAULT)
+  #               With cache enabled, this will reuse cached evaluations and only regenerate visualizations
   # - train_only: Train & cache; skip evaluation, skip if cached model exists
   # - eval_only: Evaluate & cache only; require cached models (fail if missing)
+  #
+  # NOTE: To regenerate visualizations from cached results without re-running evaluation:
+  #       Use mode=train_eval with cache_enabled=true (default). The evaluation cache will be
+  #       reused, and only visualizations will be regenerated. This is much faster than eval_only.
   #
   # Override cache behavior:
   # - benchmark.force_retrain=true: Ignore cached models, always retrain

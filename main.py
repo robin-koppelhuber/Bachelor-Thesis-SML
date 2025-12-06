@@ -26,9 +26,13 @@ def main(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration
     """
-    # Setup logging (Hydra has already changed cwd to output directory)
+    # Setup logging
     # Log file will be created in Hydra's output directory (e.g., outputs/2024-01-15/10-30-45/)
-    log_file = Path.cwd() / f"{cfg.benchmark.name}.log"
+    from hydra.core.hydra_config import HydraConfig
+
+    hydra_cfg = HydraConfig.get()
+    output_dir = Path(hydra_cfg.runtime.output_dir)
+    log_file = output_dir / f"{cfg.benchmark.name}.log"
     setup_logging(
         log_level=cfg.logging.level,
         log_file=log_file if cfg.logging.log_to_file else None,
@@ -50,8 +54,8 @@ def main(cfg: DictConfig) -> None:
     # Initialize W&B
     wandb_run = None
     if cfg.logging.log_to_wandb:
-        # Set wandb dir to output folder (Hydra's cwd)
-        wandb_dir = Path.cwd()
+        # Set wandb dir to output folder (Hydra's output directory)
+        wandb_dir = output_dir
 
         wandb_run = init_wandb(
             config=cfg,
@@ -141,7 +145,7 @@ def main(cfg: DictConfig) -> None:
                         log_figures_to_wandb(results["figures"])
 
                         # Create artifact with all saved plot files
-                        viz_dir = Path.cwd() / "visualizations"
+                        viz_dir = output_dir / "visualizations"
                         if viz_dir.exists():
                             plot_files = list(viz_dir.glob("**/*.png")) + list(viz_dir.glob("**/*.pdf"))
                             if plot_files:
@@ -188,7 +192,7 @@ def main(cfg: DictConfig) -> None:
                         title=f"{cfg.method.name} Model Merging Benchmark",
                     )
 
-                    report_path = Path.cwd() / "wandb_report_template.md"
+                    report_path = output_dir / "wandb_report_template.md"
                     report_path.write_text(report_md)
                     logger.info(f"\n✓ Report template saved to: {report_path}")
                     logger.info("  Upload this to W&B Reports: https://docs.wandb.ai/guides/reports")
