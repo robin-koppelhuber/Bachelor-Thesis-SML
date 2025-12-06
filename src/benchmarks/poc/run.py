@@ -210,6 +210,7 @@ def get_predictions_and_labels(
         text_column=dataset_cfg.preprocessing.text_column,
         text_column_2=dataset_cfg.preprocessing.get("text_column_2", None),
         label_column=dataset_cfg.preprocessing.label_column,
+        label_map=dataset_cfg.preprocessing.get("label_map", None),
         max_length=dataset_cfg.preprocessing.max_length,
         truncation=dataset_cfg.preprocessing.truncation,
         padding=dataset_cfg.preprocessing.padding,
@@ -371,6 +372,24 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     logger.info(f"Tasks: {cfg.benchmark.tasks}")
     logger.info(f"Method: {cfg.method.name}")
     logger.info(f"Device: {device}")
+
+    # Step 0: Compute reference points from fine-tuned models
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 0: Computing reference points from single-task models")
+    logger.info("=" * 80)
+
+    from src.benchmarks.reference_points import compute_reference_points
+
+    reference_cache_dir = Path(cfg.paths.evaluation_cache)
+    reference_points = compute_reference_points(
+        cfg=cfg,
+        task_names=cfg.benchmark.tasks,
+        metrics=cfg.benchmark.evaluation.metrics,
+        device=device,
+        cache_dir=reference_cache_dir,
+    )
+
+    logger.info("✓ Reference points computed and cached")
 
     # Step 1: Load base model and tokenizer
     logger.info("\n" + "=" * 80)
@@ -761,6 +780,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             metric_name=primary_metric,
             output_dir=output_dir,
             method_name=cfg.method.name,
+            reference_points=reference_points,
         )
 
         logger.info(f"✓ Generated {len(figures)} visualizations")

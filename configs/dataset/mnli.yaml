@@ -21,6 +21,13 @@ preprocessing:
   text_column: premise  # Will concatenate with hypothesis
   text_column_2: hypothesis
   label_column: label
+  # Label remapping for textattack/roberta-base-MNLI
+  # The model expects: 0=contradiction, 1=neutral, 2=entailment
+  # GLUE dataset uses: 0=entailment, 1=neutral, 2=contradiction
+  label_map:
+    0: 2  # entailment (dataset) -> 2 (model)
+    1: 1  # neutral (dataset) -> 1 (model)
+    2: 0  # contradiction (dataset) -> 0 (model)
   max_length: 512
   truncation: true
   padding: max_length

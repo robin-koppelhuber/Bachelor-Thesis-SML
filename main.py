@@ -147,7 +147,7 @@ def main(cfg: DictConfig) -> None:
                         # Create artifact with all saved plot files
                         viz_dir = output_dir / "visualizations"
                         if viz_dir.exists():
-                            plot_files = list(viz_dir.glob("**/*.png")) + list(viz_dir.glob("**/*.pdf"))
+                            plot_files = list(viz_dir.glob("**/*.png"))
                             if plot_files:
                                 create_visualization_artifact(
                                     plot_files=plot_files,

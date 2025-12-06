@@ -18,7 +18,7 @@ plt.rcParams["figure.figsize"] = (10, 6)
 def save_plot(
     fig: plt.Figure,
     save_path: Path,
-    formats: List[str] = ["png", "pdf"],
+    formats: List[str] = ["png"],
 ) -> None:
     """
     Save plot in multiple formats
@@ -26,7 +26,7 @@ def save_plot(
     Args:
         fig: Matplotlib figure
         save_path: Path without extension
-        formats: List of formats to save
+        formats: List of formats to save (default: PNG only)
     """
     save_path.parent.mkdir(parents=True, exist_ok=True)
 

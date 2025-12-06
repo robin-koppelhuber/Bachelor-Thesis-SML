@@ -1,4 +1,4 @@
-![Python Version 3.13.9](img.shields.io)
+[![Python Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Frobin-koppelhuber%2FBachelor-Thesis-SML%2Fmaster%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=python&color=blue&logo=python&logoColor=white)](https://github.com/robin-koppelhuber/Bachelor-Thesis-SML/blob/master/pyproject.toml)
 ## About
 - This project is part of my bachelor thesis at the ETH Statistical Machine Learning Lab ([ETH SML](https://sml.inf.ethz.ch/))
 - The main goal of this project is to investigate some hypothesis about the performance of different model classes in the preference aware model merging regime
@@ -98,7 +98,7 @@ uv run python scripts/setup_models.py
   - we assume that all models were fine-tuned from a shared pre-trained model to avoid the permutation invariance problem
   - For now we also assume similar hyperparameter & regularization to avoid e.g. magnitude conflicts
   - We assume that we have access to full fine-tuned task vectors, not just LoRAs, to avoid the 'different subspaces' problem when merging different LoRAs (Anisotropic vs. Isotropic)
-  - **Task vectors with different classification head sizes** (due to different num_labels) are zero-padded to match the maximum size before merging, preserving all fine-tuned weights while allowing merging across tasks.
+  - **Task vectors with different classification head sizes** (due to different num_labels) are zero-padded to match the maximum size before merging, preserving all fine-tuned weights while allowing merging across tasks. Furthermore, the label order of MNLI needed to be remapped
 - These assumptions are necessary to have linear mode connectivity
 - If we would drop the "optimize for given preference" requirement we would have access to a way bigger set of methods
 
@@ -233,7 +233,7 @@ uv pip install -e .
 
 ## Todos
 
-- Package project into container, e.g. docker -> apptainer
+- Package project into container to make it runnable on ETH cluster, e.g. docker -> [apptainer](https://apptainer.org/docs/user/latest/quick_start.html)
 - Implement EPO search
 
 #### Packages to add

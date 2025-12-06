@@ -32,6 +32,7 @@ def generate_all_visualizations(
     metric_name: str = "f1_macro",
     output_dir: Optional[Path] = None,
     method_name: Optional[str] = None,
+    reference_points: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, plt.Figure]:
     """
     Generate all visualizations for benchmark results
@@ -43,6 +44,7 @@ def generate_all_visualizations(
         metric_name: Primary metric to use for visualizations
         output_dir: Optional directory to save plots
         method_name: Optional method name for titles
+        reference_points: Optional reference points from single-task fine-tuned models
 
     Returns:
         Dictionary mapping visualization names to matplotlib figures
@@ -101,6 +103,7 @@ def generate_all_visualizations(
             metric_name,
             output_dir / "pareto_frontiers" if output_dir else None,
             method_name,
+            reference_points,
         )
         figures.update(pareto_figs)
     except Exception as e:
@@ -252,6 +255,7 @@ def generate_pareto_frontiers(
     metric_name: str,
     save_dir: Optional[Path],
     method_name: Optional[str] = None,
+    reference_points: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, plt.Figure]:
     """Generate Pareto frontier plots for all task pairs"""
     figures = {}
@@ -268,6 +272,7 @@ def generate_pareto_frontiers(
 
             # Extract scores for this task pair
             results_dict = {}
+
             for idx, result in enumerate(all_results):
                 pref_vec = result["preference_vector"]
                 pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
@@ -277,9 +282,25 @@ def generate_pareto_frontiers(
 
                 results_dict[pref_label] = (score1, score2)
 
+            # Get single-task optimal points from reference points (fine-tuned models)
+            single_task_optima = None
+            if reference_points:
+                from src.benchmarks.reference_points import get_single_task_optima
+
+                single_task_optima_full = get_single_task_optima(reference_points, task_names, metric_name)
+
+                # Extract only the scores for this task pair
+                single_task_optima = {}
+                for source_task, task_scores in single_task_optima_full.items():
+                    # Only include if this source task is one of the two tasks being plotted
+                    if source_task == task1 or source_task == task2:
+                        score1 = task_scores[task1]
+                        score2 = task_scores[task2]
+                        single_task_optima[f"{source_task}_optimal"] = (score1, score2)
+
             # Generate Pareto frontier
             save_path = save_dir / f"pareto_{task1}_vs_{task2}" if save_dir else None
-            title = f"Pareto Frontier: {task1} vs {task2}"
+            title = f"Pareto Frontier Analysis: {task1} vs {task2}"
             if method_name:
                 title += f" ({method_name})"
 
@@ -288,6 +309,7 @@ def generate_pareto_frontiers(
                 (task1, task2),
                 save_path=save_path,
                 title=title,
+                single_task_optima=single_task_optima if single_task_optima else None,
             )
 
             figures[f"pareto_{task1}_vs_{task2}"] = fig

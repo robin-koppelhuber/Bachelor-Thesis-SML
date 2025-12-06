@@ -61,6 +61,7 @@ def preprocess_dataset(
     text_column: str = "text",
     text_column_2: Optional[str] = None,
     label_column: str = "label",
+    label_map: Optional[dict] = None,
     max_length: int = 512,
     truncation: bool = True,
     padding: str = "max_length",
@@ -74,6 +75,7 @@ def preprocess_dataset(
         text_column: Name of text column
         text_column_2: Optional second text column (for sentence pairs)
         label_column: Name of label column
+        label_map: Optional mapping to remap labels (e.g., {0: 2, 1: 1, 2: 0})
         max_length: Maximum sequence length
         truncation: Whether to truncate
         padding: Padding strategy
@@ -82,6 +84,8 @@ def preprocess_dataset(
         Preprocessed dataset
     """
     logger.info("Preprocessing dataset...")
+    if label_map:
+        logger.info(f"  Applying label remapping: {label_map}")
 
     def preprocess_function(examples):
         # Handle single or paired text
@@ -103,8 +107,12 @@ def preprocess_dataset(
                 padding=padding,
             )
 
-        # Add labels (ensure they're in the right format for DataLoader)
-        tokenized["labels"] = examples[label_column]
+        # Add labels with optional remapping
+        if label_map:
+            # Remap labels according to the provided mapping
+            tokenized["labels"] = [label_map[label] for label in examples[label_column]]
+        else:
+            tokenized["labels"] = examples[label_column]
 
         return tokenized
 

@@ -180,6 +180,7 @@ def evaluate_saved_model(
             text_column=dataset_cfg.preprocessing.text_column,
             text_column_2=dataset_cfg.preprocessing.get("text_column_2", None),
             label_column=dataset_cfg.preprocessing.label_column,
+            label_map=dataset_cfg.preprocessing.get("label_map", None),
             max_length=dataset_cfg.preprocessing.max_length,
             truncation=dataset_cfg.preprocessing.truncation,
             padding=dataset_cfg.preprocessing.padding,

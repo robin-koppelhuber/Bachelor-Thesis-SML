@@ -59,6 +59,8 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         self.epsilon = epsilon
         self.utopia_point = utopia_point
         self.nadir_point = nadir_point
+        self._cached_utopia_point = None  # Cache for computed utopia point
+        self._utopia_cache_key = None     # Cache key to invalidate when tasks change
 
     def _compute_multi_task_loss(
         self,
@@ -136,7 +138,7 @@ class ChebyshevFineTuning(BaseTrainingMethod):
 
         Args:
             task_names: List of task names
-            preference_vector: Preference weights
+            preference_vector: Preference weights (not used, only for compatibility)
             dataset_configs: Dataset configurations
             cache_dir: Optional cache directory for loading fine-tuned models
 
@@ -147,6 +149,15 @@ class ChebyshevFineTuning(BaseTrainingMethod):
             # Use provided utopia point from config
             logger.info("Using utopia point from config")
             return torch.tensor(self.utopia_point, dtype=torch.float32)
+
+        # Create cache key based on tasks (utopia point is independent of preference vector)
+        cache_key = tuple(sorted(task_names))
+
+        # Check if we have a cached utopia point for these tasks
+        if self._cached_utopia_point is not None and self._utopia_cache_key == cache_key:
+            logger.info("\n✓ Using cached utopia point (already computed for these tasks)")
+            logger.info(f"Utopia point (cached): {self._cached_utopia_point.tolist()}")
+            return self._cached_utopia_point
 
         logger.info("\nComputing utopia point from fine-tuned models...")
         if cache_dir:
@@ -181,6 +192,17 @@ class ChebyshevFineTuning(BaseTrainingMethod):
             )
             model.eval()
 
+            # Log model configuration to verify correct num_labels
+            actual_num_labels = model.config.num_labels
+            expected_num_labels = task_cfg.num_labels
+            logger.info(f"    Model has {actual_num_labels} output labels (expected: {expected_num_labels})")
+
+            if actual_num_labels != expected_num_labels:
+                logger.warning(
+                    f"    ⚠ WARNING: Fine-tuned model has {actual_num_labels} labels, "
+                    f"but config expects {expected_num_labels}. This will cause incorrect utopia point!"
+                )
+
             # Load validation data (small sample for speed)
             dataset = load_hf_dataset(
                 dataset_path=task_cfg.hf_dataset.path,
@@ -199,6 +221,7 @@ class ChebyshevFineTuning(BaseTrainingMethod):
                 text_column=task_cfg.preprocessing.text_column,
                 text_column_2=task_cfg.preprocessing.get("text_column_2", None),
                 label_column=task_cfg.preprocessing.label_column,
+                label_map=task_cfg.preprocessing.get("label_map", None),
                 max_length=task_cfg.preprocessing.max_length,
                 truncation=task_cfg.preprocessing.truncation,
                 padding=task_cfg.preprocessing.padding,
@@ -242,5 +265,10 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         utopia_tensor = torch.tensor(utopia_losses, dtype=torch.float32)
 
         logger.info(f"\nUtopia point (best achievable loss per task): {utopia_tensor.tolist()}")
+
+        # Cache the computed utopia point for future preference vectors
+        self._cached_utopia_point = utopia_tensor
+        self._utopia_cache_key = cache_key
+        logger.info("✓ Utopia point cached for reuse across preference vectors")
 
         return utopia_tensor

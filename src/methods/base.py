@@ -211,6 +211,7 @@ class BaseTrainingMethod(ABC):
                 text_column=task_cfg.preprocessing.text_column,
                 text_column_2=task_cfg.preprocessing.get("text_column_2", None),
                 label_column=task_cfg.preprocessing.label_column,
+                label_map=task_cfg.preprocessing.get("label_map", None),
                 max_length=task_cfg.preprocessing.max_length,
                 truncation=task_cfg.preprocessing.truncation,
                 padding=task_cfg.preprocessing.padding,
@@ -363,6 +364,7 @@ class BaseTrainingMethod(ABC):
         preference_vector: np.ndarray,
         epoch: int,
         scaler: Optional[Any] = None,
+        wandb_prefix: Optional[str] = None,
         **kwargs,
     ) -> float:
         """
@@ -378,6 +380,7 @@ class BaseTrainingMethod(ABC):
             preference_vector: Preference weights for tasks
             epoch: Current epoch number
             scaler: Optional GradScaler for mixed precision training
+            wandb_prefix: Optional prefix for wandb logging keys (e.g., "pref_0.25_0.25_0.25_0.25")
             **kwargs: Additional parameters passed to _compute_multi_task_loss
 
         Returns:
@@ -537,12 +540,15 @@ class BaseTrainingMethod(ABC):
                 try:
                     import wandb
                     if wandb.run:
+                        # Create prefix for this preference vector's section
+                        prefix = wandb_prefix if wandb_prefix else "train"
+
                         log_dict = {
-                            "train/step_loss": multi_task_loss.item(),
+                            f"{prefix}/step_loss": multi_task_loss.item(),
                         }
                         # Log individual task losses
                         for task_name, task_loss in zip(task_names, losses_tensor):
-                            log_dict[f"train/task_loss/{task_name}"] = task_loss.item()
+                            log_dict[f"{prefix}/task_loss/{task_name}"] = task_loss.item()
 
                         # Calculate global step (step is 0-indexed, so add 1 for display)
                         global_step = epoch * min_steps + step + 1
@@ -690,7 +696,11 @@ class BaseTrainingMethod(ABC):
                 )
                 logger.info(f"Resuming from epoch {start_epoch+1}/{self.num_epochs}")
 
-        # 8. Training loop
+        # 8. Create W&B prefix for this preference vector
+        # Format: "pref_0.25_0.25_0.25_0.25" for better organization in W&B
+        wandb_prefix = "pref_" + "_".join([f"{p:.2f}" for p in preference_vector])
+
+        # 9. Training loop
         logger.info("\nStarting training...")
         for epoch in range(start_epoch, self.num_epochs):
             avg_loss = self._train_epoch(
@@ -703,6 +713,7 @@ class BaseTrainingMethod(ABC):
                 preference_vector=preference_vector,
                 epoch=epoch,
                 scaler=scaler,
+                wandb_prefix=wandb_prefix,
                 **training_kwargs,
             )
 
@@ -713,12 +724,12 @@ class BaseTrainingMethod(ABC):
                 import wandb
                 if wandb.run:
                     epoch_log_dict = {
-                        "train/epoch": epoch + 1,
-                        "train/loss": avg_loss,
-                        "train/learning_rate": optimizer.param_groups[0]['lr'],
+                        f"{wandb_prefix}/epoch": epoch + 1,
+                        f"{wandb_prefix}/loss": avg_loss,
+                        f"{wandb_prefix}/learning_rate": optimizer.param_groups[0]['lr'],
                     }
                     wandb.log(epoch_log_dict, step=epoch + 1)
-                    logger.info(f"Logged epoch {epoch+1} to W&B")
+                    logger.info(f"Logged epoch {epoch+1} to W&B under '{wandb_prefix}'")
                 else:
                     logger.warning("W&B imported but wandb.run is None - logging disabled")
             except (ImportError, AttributeError) as e:
@@ -745,7 +756,7 @@ class BaseTrainingMethod(ABC):
                 import gc
                 gc.collect()
 
-        # 9. Save final trained model if requested
+        # 10. Save final trained model if requested
         if save_path:
             self._save_trained_model(model, save_path)
 
@@ -772,12 +783,12 @@ class BaseTrainingMethod(ABC):
             except (ImportError, AttributeError, Exception) as e:
                 logger.debug(f"  Could not upload to W&B: {e}")
 
-        # 10. Cleanup all epoch checkpoints after successful completion
+        # 11. Cleanup all epoch checkpoints after successful completion
         if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:
             logger.info("\nCleaning up epoch checkpoints after successful training...")
             self._cleanup_old_checkpoints(epoch_checkpoint_dir, model_identifier, keep_epoch=None)
 
-        # 11. Compute task vector from trained model
+        # 12. Compute task vector from trained model
         logger.info("\nComputing task vector from trained model...")
         trained_state_dict = model.state_dict()
         task_vector_dict = {}
@@ -786,7 +797,7 @@ class BaseTrainingMethod(ABC):
             if name in base_state_dict:
                 task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
 
-        # 12. Flatten and return
+        # 13. Flatten and return
         from src.benchmarks.poc.run import flatten_task_vector
         flattened = flatten_task_vector(task_vector_dict)
 
