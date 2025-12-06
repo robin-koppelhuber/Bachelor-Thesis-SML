@@ -2,9 +2,12 @@
 
 Upload, download, list, and sync artifacts to/from W&B.
 
+Trained models are saved in a persistent cache (shared across runs):
+  checkpoints/trained/
+
 Usage:
-    # Upload a single file
-    python scripts/sync_artifacts.py upload --path checkpoints/training/model.safetensors --type model
+    # Upload a specific trained model
+    python scripts/sync_artifacts.py upload --path checkpoints/trained/chebyshev_abc123.safetensors --type model
 
     # Upload with custom name and metadata
     python scripts/sync_artifacts.py upload --path model.safetensors --name my-model-v1 --type model \\
@@ -16,14 +19,14 @@ Usage:
     # List all artifacts in project
     python scripts/sync_artifacts.py list --type model
 
-    # Sync: Upload new/modified local files to W&B
-    python scripts/sync_artifacts.py sync --path checkpoints/training/ --direction upload
+    # Sync: Upload all trained models
+    python scripts/sync_artifacts.py sync --path checkpoints/trained/ --direction upload
 
-    # Sync: Download new/modified W&B artifacts to local
-    python scripts/sync_artifacts.py sync --path checkpoints/training/ --direction download
+    # Sync: Download new/modified W&B artifacts to local cache
+    python scripts/sync_artifacts.py sync --path checkpoints/trained/ --direction download
 
     # Sync: Bidirectional sync (upload + download)
-    python scripts/sync_artifacts.py sync --path checkpoints/training/ --direction both
+    python scripts/sync_artifacts.py sync --path checkpoints/trained/ --direction both
 """
 
 import argparse

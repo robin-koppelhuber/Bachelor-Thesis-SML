@@ -14,18 +14,25 @@ project_name: bachelor_thesis_sml
 seed: 42
 device: auto # auto, cpu, cuda, xpu
 
-# Paths (relative to project root)
+# Paths
 paths:
+  # Global data directories (shared across runs)
   data_dir: data
-  checkpoint_dir: checkpoints
-  output_dir: outputs
-  # HuggingFace cache directories (null = use HF default in home directory)
-  hf_datasets_cache: ${paths.data_dir}/raw  # Cache for datasets
-  hf_models_cache_base: ${paths.checkpoint_dir}/base  # Cache for base models
-  hf_models_cache_finetuned: ${paths.checkpoint_dir}/finetuned  # Cache for single-task finetuned models
-  hf_models_cache_training: ${paths.checkpoint_dir}/training  # Cache for training-based method models (Chebyshev, EPO)
-  epoch_checkpoints_dir: ${paths.checkpoint_dir}/epoch_checkpoints  # Temporary epoch-level checkpoints
-  evaluation_cache: ${paths.checkpoint_dir}/eval_cache  # Cache for evaluation results
+  hf_datasets_cache: ${paths.data_dir}/raw  # HuggingFace datasets cache
+  hf_models_cache_base: checkpoints/base  # Base models (e.g., roberta-base)
+  hf_models_cache_finetuned: checkpoints/finetuned  # Single-task fine-tuned models
+
+  # Persistent caches (shared across runs for reuse)
+  trained_models_cache: checkpoints/trained  # Cached trained models (.safetensors) - SHARED
+  evaluation_cache: checkpoints/eval_cache  # Joblib cache for evaluation results - SHARED
+
+  # Per-run output directory (set by Hydra)
+  run_dir: ${hydra:runtime.output_dir}  # e.g., outputs/proof_of_concept/2024-12-06_15-30-45/
+
+  # Run-specific subdirectories (temporary outputs for this run only)
+  visualizations_dir: ${paths.run_dir}/visualizations  # Generated plots
+  checkpoints_dir: ${paths.run_dir}/epoch_checkpoints  # Epoch checkpoints during training (temporary)
+  logs_dir: ${paths.run_dir}/logs  # Log files
 
 # Weights & Biases settings
 wandb:
@@ -49,7 +56,7 @@ logging:
 # Hydra settings
 hydra:
   run:
-    dir: ${paths.output_dir}/${benchmark.name}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: outputs/${benchmark.name}/${now:%Y-%m-%d_%H-%M-%S}
   sweep:
-    dir: ${paths.output_dir}/${benchmark.name}/sweeps
+    dir: outputs/${benchmark.name}/sweeps
     subdir: ${hydra.job.num}

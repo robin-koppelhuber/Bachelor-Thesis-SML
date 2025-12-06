@@ -1,176 +1,159 @@
-"""Evaluation result caching utilities"""
+"""Evaluation result caching using Joblib Memory
 
-import hashlib
-import json
+Joblib provides robust, automatic caching with:
+- Automatic hash computation for function arguments
+- Cache invalidation when function code changes
+- Compression and memory mapping
+- Handles numpy arrays, dicts, and complex objects
+"""
+
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
+
+from joblib import Memory
 
 logger = logging.getLogger(__name__)
 
-
-def _to_native_python(obj):
-    """Convert OmegaConf objects to native Python types"""
-    from omegaconf import DictConfig, ListConfig
-
-    if isinstance(obj, (DictConfig, dict)):
-        return {k: _to_native_python(v) for k, v in obj.items()}
-    elif isinstance(obj, (ListConfig, list)):
-        return [_to_native_python(item) for item in obj]
-    else:
-        return obj
+# Global memory instance
+_memory: Optional[Memory] = None
 
 
-def _compute_cache_key(
-    method: str,
-    preference_vector: List,
-    task_name: str,
-    metric_names: List,
-    model_identifier: Optional[str] = None,
-) -> str:
+def setup_cache(cache_dir: Path, verbose: int = 0) -> Memory:
     """
-    Compute cache key for evaluation results
+    Initialize Joblib Memory for caching evaluation results
 
     Args:
-        method: Method name
-        preference_vector: Preference vector
-        task_name: Task name
-        metric_names: List of metrics
-        model_identifier: Optional unique identifier for the model (e.g., training config hash)
-                         This is crucial for training-based methods to avoid cache collisions
+        cache_dir: Directory for cache storage
+        verbose: Verbosity level (0=silent, 1=info, 10=debug)
 
     Returns:
-        MD5 hash as cache key
+        Memory instance
     """
-    # Convert to native Python types (handles OmegaConf objects)
-    preference_vector = _to_native_python(preference_vector)
-    metric_names = _to_native_python(metric_names)
+    global _memory
 
-    # Create deterministic hash from parameters
-    key_data = {
-        "method": method,
-        "preference": preference_vector,
-        "task": task_name,
-        "metrics": sorted(metric_names),
-    }
-
-    # Include model identifier if provided (important for training-based methods)
-    if model_identifier:
-        key_data["model_id"] = model_identifier
-
-    key_str = json.dumps(key_data, sort_keys=True)
-    return hashlib.md5(key_str.encode()).hexdigest()
-
-
-def get_cached_evaluation(
-    cache_dir: Path,
-    method: str,
-    preference_vector: list,
-    task_name: str,
-    metric_names: list,
-    model_identifier: Optional[str] = None,
-) -> Optional[Dict[str, float]]:
-    """
-    Get cached evaluation result if available
-
-    Args:
-        cache_dir: Cache directory
-        method: Merging method name
-        preference_vector: Preference vector
-        task_name: Task name
-        metric_names: List of metric names
-        model_identifier: Optional unique identifier for the model
-
-    Returns:
-        Cached metrics dict or None if not found
-    """
-    cache_key = _compute_cache_key(method, preference_vector, task_name, metric_names, model_identifier)
-    cache_file = cache_dir / f"eval_{cache_key}.json"
-
-    if not cache_file.exists():
-        return None
-
-    try:
-        with open(cache_file, "r") as f:
-            cached = json.load(f)
-
-        logger.debug(f"Cache hit for {task_name} with {method} [{preference_vector}]")
-        return cached["metrics"]
-
-    except Exception as e:
-        logger.warning(f"Failed to load cache from {cache_file}: {e}")
-        return None
-
-
-def save_evaluation_to_cache(
-    cache_dir: Path,
-    method: str,
-    preference_vector: list,
-    task_name: str,
-    metric_names: list,
-    metrics: Dict[str, float],
-    model_identifier: Optional[str] = None,
-) -> None:
-    """
-    Save evaluation result to cache
-
-    Args:
-        cache_dir: Cache directory
-        method: Merging method name
-        preference_vector: Preference vector
-        task_name: Task name
-        metric_names: List of metric names
-        metrics: Computed metrics
-        model_identifier: Optional unique identifier for the model
-    """
-    cache_key = _compute_cache_key(method, preference_vector, task_name, metric_names, model_identifier)
-    cache_file = cache_dir / f"eval_{cache_key}.json"
-
+    cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        cache_data = {
-            "method": method,
-            "preference_vector": preference_vector,
-            "task": task_name,
-            "metric_names": metric_names,
-            "metrics": metrics,
-        }
+    _memory = Memory(location=str(cache_dir), verbose=verbose)
+    logger.info(f"Joblib cache initialized: {cache_dir}")
 
-        with open(cache_file, "w") as f:
-            json.dump(cache_data, f, indent=2)
-
-        logger.debug(f"Cached evaluation for {task_name}")
-
-    except Exception as e:
-        logger.warning(f"Failed to save cache to {cache_file}: {e}")
+    return _memory
 
 
-def clear_evaluation_cache(cache_dir: Path, method: Optional[str] = None) -> int:
+def get_memory() -> Memory:
     """
-    Clear evaluation cache
-
-    Args:
-        cache_dir: Cache directory
-        method: Optional method name to clear only that method's cache
+    Get global Memory instance
 
     Returns:
-        Number of files deleted
+        Memory instance
+
+    Raises:
+        RuntimeError: If cache not initialized
     """
-    if not cache_dir.exists():
-        return 0
+    if _memory is None:
+        raise RuntimeError(
+            "Cache not initialized. Call setup_cache() first in main.py or run.py"
+        )
+    return _memory
 
-    count = 0
-    pattern = f"eval_*.json" if method is None else f"eval_{method}_*.json"
 
-    for cache_file in cache_dir.glob(pattern):
-        try:
-            cache_file.unlink()
-            count += 1
-        except Exception as e:
-            logger.warning(f"Failed to delete {cache_file}: {e}")
+def clear_cache(cache_dir: Optional[Path] = None) -> None:
+    """
+    Clear all cached results
 
-    if count > 0:
-        logger.info(f"Cleared {count} cached evaluation(s)")
+    Args:
+        cache_dir: Cache directory to clear (uses global memory if None)
+    """
+    if cache_dir is not None:
+        memory = Memory(location=str(cache_dir), verbose=0)
+        memory.clear()
+        logger.info(f"Cleared cache: {cache_dir}")
+    elif _memory is not None:
+        _memory.clear()
+        logger.info("Cleared global cache")
+    else:
+        logger.warning("No cache to clear")
 
-    return count
+
+def cached_evaluation(
+    method_name: str,
+    preference_vector: tuple,  # tuple for hashability
+    task_name: str,
+    model_identifier: Optional[str] = None,
+):
+    """
+    Decorator factory for cached evaluation
+
+    Joblib automatically hashes all arguments and caches results.
+    When the function code changes, cache is automatically invalidated.
+
+    Args:
+        method_name: Merging method name
+        preference_vector: Preference vector (as tuple for hashing)
+        task_name: Task name
+        model_identifier: Optional identifier for training-based methods
+
+    Returns:
+        Cached function wrapper
+    """
+    memory = get_memory()
+
+    # Create a unique cache key by combining all parameters
+    # Joblib will hash this along with the function code
+    def decorator(func):
+        # Tag the cached function with metadata for debugging
+        cached_func = memory.cache(func)
+        cached_func.__cache_metadata__ = {
+            'method': method_name,
+            'preference': preference_vector,
+            'task': task_name,
+            'model_id': model_identifier,
+        }
+        return cached_func
+
+    return decorator
+
+
+def evaluate_model_cached(
+    evaluate_fn,
+    method_name: str,
+    preference_vector: tuple,
+    task_name: str,
+    model_identifier: Optional[str],
+    **eval_kwargs
+) -> Dict[str, float]:
+    """
+    Cached wrapper for model evaluation
+
+    This function is automatically cached by Joblib based on all arguments.
+
+    Args:
+        evaluate_fn: Function that performs actual evaluation
+        method_name: Merging method name
+        preference_vector: Preference vector (tuple for hashability)
+        task_name: Task name
+        model_identifier: Optional identifier for training-based methods
+        **eval_kwargs: Additional arguments passed to evaluate_fn
+
+    Returns:
+        Evaluation metrics dict
+    """
+    memory = get_memory()
+
+    # Create a cached version of the evaluation function
+    # Joblib hashes ALL arguments including nested dicts, arrays, etc.
+    @memory.cache
+    def _cached_eval(method, pref, task, model_id, **kwargs):
+        logger.debug(f"Cache miss - evaluating {task} with {method}")
+        return evaluate_fn(**kwargs)
+
+    result = _cached_eval(
+        method_name,
+        preference_vector,
+        task_name,
+        model_identifier,
+        **eval_kwargs
+    )
+
+    return result

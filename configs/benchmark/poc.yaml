@@ -3,21 +3,18 @@ benchmark:
   name: proof_of_concept
   description: "POC benchmark for roberta-base model merging"
 
-  # Caching settings
-  cache_evaluations: true  # Cache evaluation results to skip re-computing
-
-  # Tasks to evaluate
+  # Tasks to evaluate (order matches preference vector indices)
   tasks:
     - ag_news
     - imdb
     - mnli
     - mrpc
 
-  # Preference vectors to test
+  # Preference vectors to test (must sum to 1.0 and match task count)
   preference_vectors:
     # Equal preference
     - [0.25, 0.25, 0.25, 0.25]
-    # Focus on each task
+    # Focus on each task individually
     - [0.7, 0.1, 0.1, 0.1]
     - [0.1, 0.7, 0.1, 0.1]
     - [0.1, 0.1, 0.7, 0.1]
@@ -26,29 +23,26 @@ benchmark:
     - [0.4, 0.4, 0.1, 0.1]
     - [0.1, 0.1, 0.4, 0.4]
 
-  # Grid search settings (optional)
-  grid:
-    enabled: false
-    resolution: 5  # Points per dimension
-    method: uniform  # uniform, random
-
   # Evaluation settings
   evaluation:
     batch_size: 32
-    num_samples: null  # null = full dataset
+    num_samples: null  # null = use full dataset, integer = limit samples
     metrics:
       - accuracy
       - f1_macro
       - f1_weighted
 
-  # Save settings
-  save_merged_models: true
-  save_task_vectors: true
+  # Execution mode (3 options):
+  # - train_eval: Train & cache & evaluate & cache; reuse cached models if they exist (DEFAULT)
+  # - train_only: Train & cache; skip evaluation, skip if cached model exists
+  # - eval_only: Evaluate & cache only; require cached models (fail if missing)
+  #
+  # Override cache behavior:
+  # - benchmark.force_retrain=true: Ignore cached models, always retrain
+  # - benchmark.clear_cache=true: Clear all caches before starting
+  mode: train_eval
 
-  # Training-based method settings (for Chebyshev, EPO, etc.)
-  training:
-    use_cached: true  # Use cached trained models if available
-    save_trained_models: true  # Save trained models to cache
-    force_retrain: false  # Force retraining even if cached model exists
-    evaluate_only: false  # Skip training entirely, only evaluate existing cached models
-    cache_dir: ${paths.hf_models_cache_training}  # Directory for caching trained models
+  # Caching (enabled by default, disable with benchmark.cache_enabled=false)
+  cache_enabled: true
+  force_retrain: false  # Override: ignore cached models, always retrain
+  clear_cache: false    # Override: clear all caches before starting

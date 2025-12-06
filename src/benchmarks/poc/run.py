@@ -4,7 +4,7 @@ This module implements the POC benchmark for model merging with roberta-base.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
 import hydra
 import numpy as np
@@ -16,6 +16,8 @@ from src.data.loaders import load_hf_dataset, preprocess_dataset
 from src.evaluation.evaluator import ClassificationEvaluator, EvaluationResult
 from src.methods.registry import MethodRegistry
 from src.models.loaders import apply_task_vector, compute_task_vector, load_model, load_tokenizer
+from src.utils.cache import setup_cache, get_memory
+from src.utils.config_validator import validate_poc_benchmark_config, validate_training_config
 from src.utils.logger import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -119,6 +121,133 @@ def unpad_task_vector(
     return padded_vector[:original_size]
 
 
+def load_cached_trained_model_as_task_vector(
+    cache_path: Path,
+    create_base_model_fn,
+    max_num_labels: int,
+    method,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Load a cached trained model and return it as a flattened task vector
+
+    Args:
+        cache_path: Path to cached model checkpoint
+        create_base_model_fn: Function to create base model with given num_labels
+        max_num_labels: Maximum number of labels across tasks
+        method: Training method instance with _load_trained_model method
+        device: Device to load model on
+
+    Returns:
+        Flattened task vector (trained_params - base_params)
+    """
+    # Create base model and get its state
+    base_model = create_base_model_fn(max_num_labels)
+    base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
+
+    # Create trained model and load from cache
+    trained_model = create_base_model_fn(max_num_labels)
+    method._load_trained_model(trained_model, str(cache_path), device=device)
+
+    # Compute task vector (difference from base)
+    trained_state_dict = trained_model.state_dict()
+    task_vector_dict = {
+        name: param.cpu() - base_state_dict[name]
+        for name, param in trained_state_dict.items()
+        if name in base_state_dict
+    }
+
+    return flatten_task_vector(task_vector_dict)
+
+
+def perform_evaluation(
+    merged_task_vector: Dict[str, torch.Tensor],
+    task_name: str,
+    dataset_cfg: DictConfig,
+    tokenizer,
+    create_base_model_fn,
+    device: torch.device,
+    cfg: DictConfig,
+) -> EvaluationResult:
+    """
+    Perform evaluation on a single task
+
+    This function is wrapped by Joblib cache for automatic result caching.
+
+    Args:
+        merged_task_vector: Merged task vector to evaluate
+        task_name: Name of the task
+        dataset_cfg: Dataset configuration
+        tokenizer: Tokenizer
+        create_base_model_fn: Function to create base model
+        device: Device to run on
+        cfg: Full configuration
+
+    Returns:
+        Evaluation result
+    """
+    # Create base model
+    merged_model = create_base_model_fn(num_labels=dataset_cfg.num_labels)
+
+    # Apply merged task vector
+    merged_model = apply_task_vector(merged_model, merged_task_vector, scaling=1.0)
+    merged_model.eval()
+
+    # Load and preprocess test dataset
+    test_dataset = load_hf_dataset(
+        dataset_path=dataset_cfg.hf_dataset.path,
+        subset=dataset_cfg.hf_dataset.get("subset", None),
+        split=dataset_cfg.hf_dataset.split.test,
+        cache_dir=Path(cfg.paths.hf_datasets_cache) if cfg.paths.hf_datasets_cache else None,
+    )
+
+    test_dataset_processed = preprocess_dataset(
+        dataset=test_dataset,
+        tokenizer=tokenizer,
+        text_column=dataset_cfg.preprocessing.text_column,
+        text_column_2=dataset_cfg.preprocessing.get("text_column_2", None),
+        label_column=dataset_cfg.preprocessing.label_column,
+        max_length=dataset_cfg.preprocessing.max_length,
+        truncation=dataset_cfg.preprocessing.truncation,
+        padding=dataset_cfg.preprocessing.padding,
+    )
+
+    # Limit samples if specified
+    if cfg.benchmark.evaluation.num_samples:
+        test_dataset_processed = test_dataset_processed.select(
+            range(min(cfg.benchmark.evaluation.num_samples, len(test_dataset_processed)))
+        )
+
+    # Create dataloader
+    test_dataloader = DataLoader(
+        test_dataset_processed,
+        batch_size=cfg.benchmark.evaluation.batch_size,
+        shuffle=False,
+    )
+
+    # Evaluate
+    evaluator = ClassificationEvaluator(
+        model=merged_model,
+        tokenizer=tokenizer,
+        device=str(device),
+        batch_size=cfg.benchmark.evaluation.batch_size,
+        use_torch_compile=cfg.model.optimization.get("use_torch_compile", True),
+        torch_compile_mode=cfg.model.optimization.get("torch_compile_mode_eval", "default"),
+    )
+
+    result = evaluator.evaluate(
+        dataloader=test_dataloader,
+        task_name=task_name,
+        metrics=cfg.benchmark.evaluation.metrics,
+    )
+
+    # Clean up
+    del merged_model, test_dataset, test_dataset_processed, test_dataloader
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    return result
+
+
 def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     """
     Run proof of concept benchmark
@@ -133,6 +262,28 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     logger.info("=" * 80)
     logger.info("Starting POC Benchmark")
     logger.info("=" * 80)
+
+    # Validate configuration before execution
+    logger.info("Validating configuration...")
+    validate_poc_benchmark_config(cfg)
+    validate_training_config(cfg)
+
+    # Initialize Joblib cache for evaluation results
+    cache_enabled = cfg.benchmark.get('cache_enabled', True)
+    if cache_enabled:
+        eval_cache_dir = Path(cfg.paths.evaluation_cache)
+        setup_cache(eval_cache_dir, verbose=0)
+        logger.info(f"Evaluation cache enabled: {eval_cache_dir}")
+
+        # Clear cache if requested
+        if cfg.benchmark.get('clear_cache', False):
+            from src.utils.cache import clear_cache
+            clear_cache()
+            logger.info("Cleared evaluation cache")
+    else:
+        logger.warning("Evaluation caching disabled")
+
+    logger.info(f"Execution mode: {cfg.benchmark.mode}")
     logger.info(f"Tasks: {cfg.benchmark.tasks}")
     logger.info(f"Method: {cfg.method.name}")
     logger.info(f"Device: {device}")
@@ -273,7 +424,9 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         # Get merged task vector (via merging or training)
         from src.methods.base import BaseTrainingMethod
 
-        if isinstance(method, BaseTrainingMethod):
+        is_training_based = isinstance(method, BaseTrainingMethod)
+
+        if is_training_based:
             # Training-based method: train new model and get task vector
             import hashlib
             import json
@@ -283,10 +436,6 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             params = OmegaConf.to_container(cfg.method.params, resolve=True)
 
             # Use INCLUSION (whitelist) approach: only include behavior-critical parameters
-            # This prevents cache invalidation from infrastructure/logging/performance changes
-            #
-            # Philosophy: A parameter should be included if and ONLY if changing it would
-            # produce a different final model (different weights/predictions)
             training_critical_params = {
                 # Core training hyperparameters (affect optimization)
                 'learning_rate',                # Optimizer learning rate
@@ -321,82 +470,56 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             }, sort_keys=True)
             config_hash = hashlib.md5(config_str.encode()).hexdigest()[:12]
 
-            # Construct cache paths
-            cache_dir = Path(cfg.benchmark.training.cache_dir) if hasattr(cfg.benchmark, 'training') else None
+            # Construct cache path for trained model
+            cache_dir = Path(cfg.paths.trained_models_cache)
+            cache_dir.mkdir(parents=True, exist_ok=True)
             model_filename = f"{cfg.method.name}_{config_hash}.safetensors"
-            model_cache_path = cache_dir / model_filename if cache_dir else None
+            model_cache_path = cache_dir / model_filename
 
-            # Check if we're in evaluate-only mode
-            evaluate_only = (
-                hasattr(cfg.benchmark, 'training') and
-                cfg.benchmark.training.get('evaluate_only', False)
-            )
+            # Determine execution mode
+            mode = cfg.benchmark.get('mode', 'train_eval')
+            force_retrain = cfg.benchmark.get('force_retrain', False)
+            model_exists = model_cache_path.exists()
 
-            # Check if we should use cached model
-            use_cached = (
-                hasattr(cfg.benchmark, 'training') and
-                cfg.benchmark.training.use_cached and
-                model_cache_path and
-                model_cache_path.exists() and
-                not cfg.benchmark.training.get('force_retrain', False)
-            )
+            # Mode logic:
+            # - eval_only: Require cached model (fail if missing)
+            # - train_eval: Use cache if exists and not force_retrain, else train
+            # - train_only: Skip if cache exists and not force_retrain, else train
+            should_train = False
+            should_load_cache = False
 
-            if evaluate_only:
-                # Evaluate-only mode: require cached model
-                if not model_cache_path or not model_cache_path.exists():
-                    logger.error(f"Evaluate-only mode enabled but model not found: {model_cache_path}")
-                    logger.error("Please train the model first or disable evaluate_only mode")
-                    raise FileNotFoundError(f"Cached model not found: {model_cache_path}")
+            if mode == 'eval_only':
+                if not model_exists:
+                    raise FileNotFoundError(
+                        f"eval_only mode requires cached model: {model_cache_path}\n"
+                        f"Train first with mode=train_eval or mode=train_only"
+                    )
+                should_load_cache = True
+            elif mode == 'train_only':
+                if model_exists and not force_retrain:
+                    logger.info(f"Skipping training (cached model exists): {model_cache_path}")
+                    should_load_cache = True
+                else:
+                    should_train = True
+            else:  # train_eval (default)
+                if model_exists and not force_retrain:
+                    should_load_cache = True
+                else:
+                    should_train = True
 
-                logger.info(f"[EVALUATE ONLY] Loading cached trained model from {model_cache_path}...")
-                # Load cached model and compute task vector
-                base_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
-                base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
+            if should_load_cache:
+                logger.info(f"Loading cached trained model: {model_cache_path}")
+                max_labels = max(ds.num_labels for ds in dataset_configs.values())
+                merged_flat = load_cached_trained_model_as_task_vector(
+                    model_cache_path, create_base_model, max_labels, method, device
+                )
+                logger.info("  ✓ Loaded from cache")
+            elif should_train:
+                logger.info(f"Training multi-task model (mode={mode})...")
 
-                # Load trained model
-                trained_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
-                method._load_trained_model(trained_model, str(model_cache_path), device=device)
-
-                # Compute task vector
-                trained_state_dict = trained_model.state_dict()
-                task_vector_dict = {
-                    name: param.cpu() - base_state_dict[name]
-                    for name, param in trained_state_dict.items()
-                    if name in base_state_dict
-                }
-                merged_flat = flatten_task_vector(task_vector_dict)
-                logger.info("  ✓ Loaded cached model successfully")
-            elif use_cached:
-                logger.info(f"Loading cached trained model from {model_cache_path}...")
-                # Load cached model and compute task vector
-                base_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
-                base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
-
-                # Load trained model
-                trained_model = create_base_model(max(ds.num_labels for ds in dataset_configs.values()))
-                method._load_trained_model(trained_model, str(model_cache_path), device=device)
-
-                # Compute task vector
-                trained_state_dict = trained_model.state_dict()
-                task_vector_dict = {
-                    name: param.cpu() - base_state_dict[name]
-                    for name, param in trained_state_dict.items()
-                    if name in base_state_dict
-                }
-                merged_flat = flatten_task_vector(task_vector_dict)
-                logger.info("  ✓ Loaded cached model successfully")
-            else:
-                # Train new model
-                logger.info("Training multi-task model...")
-
-                # Prepare save path if saving is enabled
-                save_path = None
-                if (hasattr(cfg.benchmark, 'training') and
-                    cfg.benchmark.training.save_trained_models and
-                    model_cache_path):
-                    model_cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    save_path = str(model_cache_path)
-                    logger.info(f"  Will save trained model to: {save_path}")
+                # Save path for trained model (always save when training)
+                save_path = str(model_cache_path)
+                logger.info(f"  Will save to: {save_path}")
 
                 merged_flat = method.train(
                     base_model=cfg.model.hf_model_id,
@@ -406,9 +529,12 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     finetuned_model_cache_dir=str(Path(cfg.paths.hf_models_cache_finetuned)) if cfg.paths.hf_models_cache_finetuned else None,
                     dataset_cache_dir=str(Path(cfg.paths.hf_datasets_cache)) if cfg.paths.hf_datasets_cache else None,
                     save_path=save_path,
-                    epoch_checkpoint_dir=str(Path(cfg.paths.epoch_checkpoints_dir)) if hasattr(cfg.paths, 'epoch_checkpoints_dir') else None,
+                    epoch_checkpoint_dir=str(Path(cfg.paths.checkpoints_dir)),
                     model_identifier=config_hash,
                 )
+            else:
+                # Should not reach here, but handle gracefully
+                raise RuntimeError(f"Invalid execution state: mode={mode}, should_train={should_train}, should_load_cache={should_load_cache}")
         else:
             # Parameter merging method: merge pre-computed task vectors
             logger.info("Merging task vectors...")
@@ -436,125 +562,71 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
         merged_task_vector = unflatten_task_vector(merged_flat, task_vector_template)
 
-        # For each task, evaluate the merged model
+        # For each task, evaluate the merged model (with Joblib caching)
         task_results = {}
-
-        # Setup evaluation cache if enabled
-        use_cache = cfg.benchmark.get("cache_evaluations", False)
-        cache_dir = Path(cfg.paths.evaluation_cache) if use_cache else None
 
         for task_name in cfg.benchmark.tasks:
             logger.info(f"\nEvaluating on task: {task_name}")
 
-            # Check cache first
-            if use_cache:
-                from src.utils.cache import get_cached_evaluation
-
-                # For training-based methods, include model identifier in cache key
-                model_id = config_hash if is_training_based else None
-
-                cached_metrics = get_cached_evaluation(
-                    cache_dir=cache_dir,
-                    method=cfg.method.name,
-                    preference_vector=preference_vector,
-                    task_name=task_name,
-                    metric_names=cfg.benchmark.evaluation.metrics,
-                    model_identifier=model_id,
-                )
-
-                if cached_metrics is not None:
-                    # Use cached result
-                    from src.evaluation.evaluator import EvaluationResult
-
-                    result = EvaluationResult(
-                        task_name=task_name,
-                        metrics=cached_metrics,
-                        num_samples=0,  # Not stored in cache
-                        batch_size=cfg.benchmark.evaluation.batch_size,
-                        device=str(device),
-                    )
-                    task_results[task_name] = result
-                    logger.info(f"  ✓ Using cached evaluation result")
-                    logger.info(f"  {result}")
-                    continue
-
             dataset_cfg = dataset_configs[task_name]
 
-            # Create base model
-            merged_model = create_base_model(num_labels=dataset_cfg.num_labels)
-
-            # Apply merged task vector
-            merged_model = apply_task_vector(merged_model, merged_task_vector, scaling=1.0)
-            merged_model.eval()
-
-            # Load and preprocess test dataset
-            test_dataset = load_hf_dataset(
-                dataset_path=dataset_cfg.hf_dataset.path,
-                subset=dataset_cfg.hf_dataset.get("subset", None),
-                split=dataset_cfg.hf_dataset.split.test,
-                cache_dir=Path(cfg.paths.hf_datasets_cache)
-                if cfg.paths.hf_datasets_cache
-                else None,
-            )
-
-            test_dataset_processed = preprocess_dataset(
-                dataset=test_dataset,
-                tokenizer=tokenizer,
-                text_column=dataset_cfg.preprocessing.text_column,
-                text_column_2=dataset_cfg.preprocessing.get("text_column_2", None),
-                label_column=dataset_cfg.preprocessing.label_column,
-                max_length=dataset_cfg.preprocessing.max_length,
-                truncation=dataset_cfg.preprocessing.truncation,
-                padding=dataset_cfg.preprocessing.padding,
-            )
-
-            # Limit samples if specified
-            if cfg.benchmark.evaluation.num_samples:
-                test_dataset_processed = test_dataset_processed.select(
-                    range(min(cfg.benchmark.evaluation.num_samples, len(test_dataset_processed)))
-                )
-
-            # Create dataloader
-            test_dataloader = DataLoader(
-                test_dataset_processed,
-                batch_size=cfg.benchmark.evaluation.batch_size,
-                shuffle=False,
-            )
-
-            # Evaluate
-            evaluator = ClassificationEvaluator(
-                model=merged_model,
-                tokenizer=tokenizer,
-                device=str(device),
-                batch_size=cfg.benchmark.evaluation.batch_size,
-                use_torch_compile=cfg.model.optimization.get("use_torch_compile", True),
-                torch_compile_mode=cfg.model.optimization.get("torch_compile_mode_eval", "default"),
-            )
-
-            result = evaluator.evaluate(
-                dataloader=test_dataloader,
-                task_name=task_name,
-                metrics=cfg.benchmark.evaluation.metrics,
-            )
-
-            task_results[task_name] = result
-
-            # Save to cache if enabled
-            if use_cache:
-                from src.utils.cache import save_evaluation_to_cache
+            if cache_enabled:
+                # Use Joblib-cached evaluation
+                memory = get_memory()
 
                 # For training-based methods, include model identifier in cache key
                 model_id = config_hash if is_training_based else None
 
-                save_evaluation_to_cache(
-                    cache_dir=cache_dir,
-                    method=cfg.method.name,
-                    preference_vector=preference_vector,
-                    task_name=task_name,
-                    metric_names=cfg.benchmark.evaluation.metrics,
-                    metrics=result.metrics,
-                    model_identifier=model_id,
+                # Create cached version of evaluation function
+                # Joblib automatically hashes merged_task_vector and all arguments
+                @memory.cache
+                def _cached_perform_evaluation(
+                    task_vec_hash,  # Hash of task vector for cache key
+                    method_name,
+                    pref_vec_tuple,
+                    task,
+                    model_id_param,
+                ):
+                    """Cached wrapper - Joblib handles all caching automatically"""
+                    logger.info(f"  Cache miss - performing evaluation for {task}")
+                    return perform_evaluation(
+                        merged_task_vector=merged_task_vector,
+                        task_name=task,
+                        dataset_cfg=dataset_cfg,
+                        tokenizer=tokenizer,
+                        create_base_model_fn=create_base_model,
+                        device=device,
+                        cfg=cfg,
+                    )
+
+                # Create deterministic hash of task vector for cache key
+                import hashlib
+                task_vec_bytes = str(sorted(merged_task_vector.items())).encode()
+                task_vec_hash = hashlib.md5(task_vec_bytes).hexdigest()[:12]
+
+                result = _cached_perform_evaluation(
+                    task_vec_hash=task_vec_hash,
+                    method_name=cfg.method.name,
+                    pref_vec_tuple=tuple(preference_vector),
+                    task=task_name,
+                    model_id_param=model_id,
                 )
+
+                logger.info(f"  ✓ {result}")
+            else:
+                # No caching - perform evaluation directly
+                result = perform_evaluation(
+                    merged_task_vector=merged_task_vector,
+                    task_name=task_name,
+                    dataset_cfg=dataset_cfg,
+                    tokenizer=tokenizer,
+                    create_base_model_fn=create_base_model,
+                    device=device,
+                    cfg=cfg,
+                )
+                logger.info(f"  {result}")
+
+            task_results[task_name] = result
 
             # Log individual task results to W&B
             try:
@@ -572,10 +644,6 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     wandb.log(log_dict, step=pref_idx)
             except (ImportError, AttributeError):
                 pass
-
-            # Clean up
-            del merged_model, test_dataset, test_dataset_processed, test_dataloader
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
         # Store results for this preference vector
         all_results.append(
@@ -625,8 +693,9 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     try:
         from src.visualization.generator import generate_all_visualizations
 
-        # Determine output directory for plots
-        output_dir = Path.cwd() / "visualizations"
+        # Determine output directory for plots (under current run directory)
+        output_dir = Path(cfg.paths.visualizations_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Saving visualizations to: {output_dir}")
 
         # Generate all visualizations
@@ -663,67 +732,3 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
     return results
 
-
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
-def main(cfg: DictConfig) -> None:
-    """Main entry point for POC benchmark
-
-    Hydra automatically:
-    - Changes working directory to outputs/benchmark_name/YYYY-MM-DD_HH-MM-SS/
-    - Saves config snapshot to .hydra/ subdirectory
-    - Handles command-line overrides
-    """
-
-    # Setup logging (file will be created in Hydra's output directory)
-    log_file = Path("proof_of_concept.log") if cfg.logging.log_to_file else None
-    setup_logging(
-        log_level=cfg.logging.level,
-        log_file=log_file,
-        console_format=cfg.logging.console_format,
-    )
-
-    # Setup device
-    if cfg.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(cfg.device)
-
-    # Setup W&B if enabled
-    if cfg.wandb.enabled:
-        from src.utils.wandb_utils import init_wandb
-        init_wandb(
-            config=cfg,
-            name=f"{cfg.benchmark.name}_{cfg.method.name}",
-            tags=cfg.wandb.tags + [cfg.benchmark.name, cfg.method.name],
-        )
-
-    try:
-        # Run benchmark
-        results = run_poc_benchmark(cfg, device)
-
-        # Finish W&B run if enabled
-        if cfg.wandb.enabled:
-            try:
-                import wandb
-                if wandb.run:
-                    wandb.finish()
-            except (ImportError, AttributeError):
-                pass
-
-    except Exception as e:
-        logger.error(f"Benchmark failed with error: {e}")
-
-        # Finish W&B run with failed status
-        if cfg.wandb.enabled:
-            try:
-                import wandb
-                if wandb.run:
-                    wandb.finish(exit_code=1)
-            except (ImportError, AttributeError):
-                pass
-
-        raise
-
-
-if __name__ == "__main__":
-    main()

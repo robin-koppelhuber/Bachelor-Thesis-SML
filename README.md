@@ -230,6 +230,7 @@ uv pip install -e .
   - [Mergekit](https://github.com/arcee-ai/mergekit): most popular open-source package (6.5k stars); more application focused, does not seem useful except their "Raw PyTorch Model Merging" (mergekit-pytorch) module
   - [Merge bench](https://github.com/uiuctml/MergeBench):
 
+
 ## Todos
 
 - Package project into container, e.g. docker -> apptainer
@@ -237,7 +238,6 @@ uv pip install -e .
 
 #### Packages to add
 
-- Joblib for caching (currently own implementation, getting out of hand)
 - Peft for LoRAs
 
 
