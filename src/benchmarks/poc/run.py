@@ -785,6 +785,31 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
         logger.info(f"✓ Generated {len(figures)} visualizations")
 
+        # Export comprehensive results table
+        try:
+            from src.visualization.generator import export_results_table
+
+            logger.info("\n" + "=" * 80)
+            logger.info("Exporting Comprehensive Results Table")
+            logger.info("=" * 80)
+
+            export_results_table(
+                all_results=all_results,
+                task_names=cfg.benchmark.tasks,
+                metrics=cfg.benchmark.evaluation.metrics,
+                output_dir=output_dir,
+                method_name=cfg.method.name,
+                reference_points=reference_points,
+            )
+
+            logger.info("✓ Results exported successfully")
+
+        except Exception as e:
+            import traceback
+            logger.error(f"Failed to export results table: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            logger.warning("Continuing without results export.")
+
     except Exception as e:
         import traceback
         logger.error(f"Failed to generate visualizations: {e}")
@@ -806,9 +831,13 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 task_names=cfg.benchmark.tasks,
                 metrics=cfg.benchmark.evaluation.metrics,
             )
-            logger.info("✓ Logged benchmark results as bar charts to W&B")
+        else:
+            logger.info("W&B run not active, skipping bar chart logging")
+    except ImportError:
+        logger.debug("W&B not available, skipping bar chart logging")
     except Exception as e:
         logger.warning(f"Failed to log bar charts to W&B: {e}")
+        logger.debug("This is a non-critical error - visualizations were saved locally")
 
     # Step 7: Summarize results
     logger.info("\n" + "=" * 80)

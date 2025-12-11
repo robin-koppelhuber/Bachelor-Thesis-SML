@@ -86,27 +86,27 @@ def plot_pareto_frontier_2d(
 
     nadir_point = np.array([np.min(points[:, 0]), np.min(points[:, 1])])
 
-    # Visualize hypervolume (area dominated by Pareto front)
-    # Draw filled region from nadir point to Pareto front
-    if len(pareto_points) > 0:
-        # Create polygon for hypervolume visualization
-        hypervolume_x = [nadir_point[0]]
-        hypervolume_y = [nadir_point[1]]
+    # # COMMENTED OUT: Visualize hypervolume (area dominated by Pareto front)
+    # # Draw filled region from nadir point to Pareto front
+    # if len(pareto_points) > 0:
+    #     # Create polygon for hypervolume visualization
+    #     hypervolume_x = [nadir_point[0]]
+    #     hypervolume_y = [nadir_point[1]]
 
-        for point in pareto_points:
-            hypervolume_x.append(point[0])
-            hypervolume_y.append(nadir_point[1])
-            hypervolume_x.append(point[0])
-            hypervolume_y.append(point[1])
+    #     for point in pareto_points:
+    #         hypervolume_x.append(point[0])
+    #         hypervolume_y.append(nadir_point[1])
+    #         hypervolume_x.append(point[0])
+    #         hypervolume_y.append(point[1])
 
-        # Close the polygon
-        hypervolume_x.append(pareto_points[-1][0])
-        hypervolume_y.append(nadir_point[1])
-        hypervolume_x.append(nadir_point[0])
-        hypervolume_y.append(nadir_point[1])
+    #     # Close the polygon
+    #     hypervolume_x.append(pareto_points[-1][0])
+    #     hypervolume_y.append(nadir_point[1])
+    #     hypervolume_x.append(nadir_point[0])
+    #     hypervolume_y.append(nadir_point[1])
 
-        ax.fill(hypervolume_x, hypervolume_y, alpha=0.15, color='green',
-                label='Hypervolume', zorder=1)
+    #     ax.fill(hypervolume_x, hypervolume_y, alpha=0.15, color='green',
+    #             label='Hypervolume', zorder=1)
 
     # Plot all points
     non_pareto_mask = np.ones(len(points), dtype=bool)
@@ -133,8 +133,8 @@ def plot_pareto_frontier_2d(
         zorder=5,
     )
 
-    # Plot Pareto optimal points
-    ax.scatter(
+    # Plot Pareto optimal points (we'll label them selectively below)
+    pareto_scatter = ax.scatter(
         pareto_points[:, 0],
         pareto_points[:, 1],
         s=150,
@@ -145,6 +145,9 @@ def plot_pareto_frontier_2d(
         label="Pareto Optimal",
         zorder=6,
     )
+
+    # Store pareto point info for labeling
+    pareto_config_names = [config_names[idx] for idx in pareto_indices]
 
     # Plot utopia point (ideal but usually unachievable)
     ax.scatter(
@@ -159,24 +162,35 @@ def plot_pareto_frontier_2d(
         zorder=7,
     )
 
-    # Plot nadir point (worst on Pareto front)
-    ax.scatter(
-        nadir_point[0],
-        nadir_point[1],
-        s=100,
-        c="purple",
-        marker="s",
-        edgecolors="black",
-        linewidths=1.5,
-        label="Nadir Point",
-        zorder=7,
-    )
+    # # COMMENTED OUT: Plot nadir point (worst on Pareto front)
+    # ax.scatter(
+    #     nadir_point[0],
+    #     nadir_point[1],
+    #     s=100,
+    #     c="purple",
+    #     marker="s",
+    #     edgecolors="black",
+    #     linewidths=1.5,
+    #     label="Nadir Point",
+    #     zorder=7,
+    # )
 
     # Plot single-task optimal points if provided
     if single_task_optima:
+        colors_list = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]  # Distinct colors
+        markers_list = ["^", "v", "<", ">"]  # Different triangle orientations
+
         for i, (opt_name, opt_point) in enumerate(single_task_optima.items()):
-            marker = "^" if i == 0 else "v"
-            color = "blue" if i == 0 else "orange"
+            marker = markers_list[i % len(markers_list)]
+            color = colors_list[i % len(colors_list)]
+
+            # Create cleaner label: "Fine-tuned: AG News" instead of "Ag News Optimal"
+            task_name = opt_name.replace('_optimal', '').replace('_', ' ')
+            # Capitalize properly: ag_news -> AG News, imdb -> IMDB, mnli -> MNLI, mrpc -> MRPC
+            task_name_parts = task_name.split()
+            formatted_name = ' '.join([part.upper() if len(part) <= 4 else part.title() for part in task_name_parts])
+            label = f"Fine-tuned: {formatted_name}"
+
             ax.scatter(
                 opt_point[0],
                 opt_point[1],
@@ -185,7 +199,7 @@ def plot_pareto_frontier_2d(
                 marker=marker,
                 edgecolors="black",
                 linewidths=1.5,
-                label=f"{opt_name.replace('_', ' ').title()}",
+                label=label,
                 zorder=7,
             )
 
@@ -205,24 +219,88 @@ def plot_pareto_frontier_2d(
     closest_idx = np.argmin(distances_to_utopia)
     closest_point = pareto_points[closest_idx]
 
+    # Smart labeling: Label only key points to avoid clutter
+    # 1. Closest to utopia (always)
+    # 2. Extreme points (best on each axis)
+    # 3. Optionally: corner points of Pareto front
+
+    labeled_points = set()
+
+    # Label closest to utopia
+    closest_config = pareto_config_names[closest_idx]
     ax.annotate(
-        f"Closest to Utopia\n({closest_point[0]:.2f}, {closest_point[1]:.2f})",
+        f"Closest to Utopia\n{closest_config}\n({closest_point[0]:.3f}, {closest_point[1]:.3f})",
         xy=closest_point,
-        xytext=(closest_point[0] + 0.05, closest_point[1] - 0.1),
-        fontsize=9,
+        xytext=(closest_point[0] + 0.05, closest_point[1] - 0.08),
+        fontsize=8,
         bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
         arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0.2", lw=1.5),
         zorder=8,
     )
+    labeled_points.add(closest_idx)
+
+    # Label extreme points (best on each axis) if different from closest
+    best_x_idx = np.argmax(pareto_points[:, 0])
+    best_y_idx = np.argmax(pareto_points[:, 1])
+
+    if best_x_idx not in labeled_points and len(pareto_points) > 1:
+        point = pareto_points[best_x_idx]
+        config = pareto_config_names[best_x_idx]
+        ax.annotate(
+            f"Best {format_task_name(task_names[0])}\n{config}",
+            xy=point,
+            xytext=(point[0] - 0.05, point[1] + 0.05),
+            fontsize=7,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="lightblue", alpha=0.6),
+            arrowprops=dict(arrowstyle="->", lw=1),
+            zorder=8,
+        )
+        labeled_points.add(best_x_idx)
+
+    if best_y_idx not in labeled_points and len(pareto_points) > 1:
+        point = pareto_points[best_y_idx]
+        config = pareto_config_names[best_y_idx]
+        ax.annotate(
+            f"Best {format_task_name(task_names[1])}\n{config}",
+            xy=point,
+            xytext=(point[0] + 0.05, point[1] - 0.05),
+            fontsize=7,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="lightcoral", alpha=0.6),
+            arrowprops=dict(arrowstyle="->", lw=1),
+            zorder=8,
+        )
+        labeled_points.add(best_y_idx)
+
+    # Add a note about unlabeled points
+    if len(pareto_points) > len(labeled_points):
+        unlabeled_count = len(pareto_points) - len(labeled_points)
+        ax.text(
+            0.98, 0.02, f"+ {unlabeled_count} other Pareto-optimal solution(s)",
+            transform=ax.transAxes,
+            fontsize=8,
+            verticalalignment='bottom',
+            horizontalalignment='right',
+            style='italic',
+            color='gray',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7, edgecolor='gray')
+        )
 
     # Labels and styling
-    ax.set_xlabel(f"{task_names[0]} Performance", fontsize=12, fontweight='bold')
-    ax.set_ylabel(f"{task_names[1]} Performance", fontsize=12, fontweight='bold')
+    # Format task names properly (ag_news -> AG News, imdb -> IMDB, etc.)
+    def format_task_name(name: str) -> str:
+        parts = name.replace('_', ' ').split()
+        return ' '.join([part.upper() if len(part) <= 4 else part.title() for part in parts])
+
+    formatted_task1 = format_task_name(task_names[0])
+    formatted_task2 = format_task_name(task_names[1])
+
+    ax.set_xlabel(f"{formatted_task1} Performance", fontsize=12, fontweight='bold')
+    ax.set_ylabel(f"{formatted_task2} Performance", fontsize=12, fontweight='bold')
 
     if title:
         ax.set_title(title, fontsize=14, fontweight='bold')
     else:
-        ax.set_title(f"Pareto Frontier Analysis: {task_names[0]} vs {task_names[1]}",
+        ax.set_title(f"Pareto Frontier Analysis: {formatted_task1} vs {formatted_task2}",
                     fontsize=14, fontweight='bold')
 
     ax.legend(loc='best', fontsize=10, framealpha=0.9)

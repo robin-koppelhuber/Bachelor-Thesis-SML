@@ -1,11 +1,13 @@
 """Visualization generator for benchmark results"""
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from src.evaluation.metrics import (
     compute_confusion_matrix_metrics,
@@ -15,9 +17,12 @@ from src.evaluation.metrics import (
 from src.visualization.pareto import compute_pareto_frontier_2d, plot_pareto_frontier_2d
 from src.visualization.plots import (
     plot_confusion_matrix,
+    plot_distance_to_utopia,
     plot_method_comparison_dashboard,
     plot_multi_radar_chart,
+    plot_parallel_coordinates,
     plot_performance_heatmap,
+    plot_performance_recovery,
     plot_preference_alignment,
     plot_radar_chart,
     plot_task_interference_matrix,
@@ -121,6 +126,45 @@ def generate_all_visualizations(
         figures.update(alignment_figs)
     except Exception as e:
         logger.error(f"Failed to generate preference alignment plots: {e}")
+
+    # 6. Parallel coordinates visualization
+    try:
+        fig = plot_parallel_coordinates(
+            all_results,
+            task_names,
+            metric_name,
+            output_dir / "parallel_coordinates" if output_dir else None,
+            reference_points,
+        )
+        figures["parallel_coordinates"] = fig
+    except Exception as e:
+        logger.error(f"Failed to generate parallel coordinates plot: {e}")
+
+    # 7. Distance to utopia analysis
+    try:
+        fig = plot_distance_to_utopia(
+            all_results,
+            task_names,
+            metric_name,
+            output_dir / "distance_to_utopia" if output_dir else None,
+            reference_points,
+        )
+        figures["distance_to_utopia"] = fig
+    except Exception as e:
+        logger.error(f"Failed to generate distance to utopia plot: {e}")
+
+    # 8. Performance recovery analysis
+    try:
+        fig = plot_performance_recovery(
+            all_results,
+            task_names,
+            metric_name,
+            output_dir / "performance_recovery" if output_dir else None,
+            reference_points,
+        )
+        figures["performance_recovery"] = fig
+    except Exception as e:
+        logger.error(f"Failed to generate performance recovery plot: {e}")
 
     logger.info(f"Generated {len(figures)} visualizations successfully")
     return figures
@@ -415,3 +459,225 @@ def select_representative_preferences(
         selected.append(remaining.pop(0))
 
     return selected
+
+
+def export_results_table(
+    all_results: List[Dict],
+    task_names: List[str],
+    metrics: List[str],
+    output_dir: Optional[Path] = None,
+    method_name: Optional[str] = None,
+    reference_points: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Dict:
+    """
+    Export comprehensive results table to JSON and CSV
+
+    Creates a table with all metrics for all preference vectors and tasks,
+    including reference points from single-task fine-tuned models.
+
+    Args:
+        all_results: List of result dictionaries
+        task_names: List of task names
+        metrics: List of metric names
+        output_dir: Optional directory to save exports
+        method_name: Optional method name for labeling
+        reference_points: Optional reference points from single-task models
+
+    Returns:
+        Dictionary containing the comprehensive results table
+    """
+    import json
+    import pandas as pd
+    from src.visualization.plots import format_task_name, format_metric_name
+
+    logger.info("Exporting comprehensive results table...")
+
+    # Convert DictConfig/ListConfig to regular Python objects if needed
+    def to_python(obj):
+        """Convert OmegaConf objects to regular Python types"""
+        if hasattr(obj, '__iter__') and not isinstance(obj, str):
+            if hasattr(obj, 'items'):
+                # Dictionary-like
+                return {k: to_python(v) for k, v in obj.items()}
+            else:
+                # List-like
+                return [to_python(item) for item in obj]
+        return obj
+
+    # Ensure task_names and metrics are regular Python lists
+    task_names = to_python(task_names)
+    metrics = to_python(metrics)
+
+    # Build comprehensive table
+    rows = []
+
+    # Add results for each preference vector
+    for result in all_results:
+        pref_vec = to_python(result["preference_vector"])  # Convert to regular list
+        pref_label = f"[{', '.join([f'{x:.2f}' for x in pref_vec])}]"
+
+        for task in task_names:
+            task_result = result["task_results"][task]
+
+            row = {
+                "preference_vector": pref_label,
+                "preference_raw": list(pref_vec),  # Ensure it's a regular list
+                "task": str(task),  # Ensure it's a regular string
+                "task_formatted": format_task_name(task),
+                "source": str(method_name) if method_name else "merged",
+            }
+
+            # Add all metrics
+            for metric in metrics:
+                if metric in task_result.metrics:
+                    # Convert metric value to float to ensure JSON serialization
+                    metric_value = task_result.metrics[metric]
+                    row[metric] = float(metric_value) if metric_value is not None else None
+                    row[f"{metric}_formatted"] = format_metric_name(metric)
+
+            rows.append(row)
+
+    # Add reference points (single-task fine-tuned models) if available
+    if reference_points:
+        for source_task, ref_metrics in reference_points.items():
+            for task in task_names:
+                row = {
+                    "preference_vector": f"Fine-tuned: {format_task_name(source_task)}",
+                    "preference_raw": None,
+                    "task": str(task),  # Ensure it's a regular string
+                    "task_formatted": format_task_name(task),
+                    "source": f"finetuned_{source_task}",
+                }
+
+                # Add all metrics
+                for metric in metrics:
+                    metric_key = f"{task}_{metric}"
+                    if metric_key in ref_metrics:
+                        # Convert to float to ensure JSON serialization
+                        metric_value = ref_metrics[metric_key]
+                        row[metric] = float(metric_value) if metric_value is not None else None
+                        row[f"{metric}_formatted"] = format_metric_name(metric)
+                    else:
+                        row[metric] = None
+
+                rows.append(row)
+
+    # Create DataFrame
+    df = pd.DataFrame(rows)
+
+    # Compute additional statistics
+    summary_stats = {}
+
+    # Average performance per task across preference vectors (excluding fine-tuned)
+    method_name_str = str(method_name) if method_name else "merged"
+    merged_results = df[df["source"].str.startswith("merged") | df["source"].str.startswith("train") | (df["source"] == method_name_str)]
+    if not merged_results.empty:
+        for task in task_names:
+            task_data = merged_results[merged_results["task"] == task]
+            summary_stats[f"{task}_avg"] = {
+                metric: float(task_data[metric].mean()) if metric in task_data.columns else None
+                for metric in metrics
+            }
+
+    # Best preference vector per task per metric
+    best_per_task = {}
+    for task in task_names:
+        task_data = merged_results[merged_results["task"] == task]
+        best_per_task[task] = {}
+        for metric in metrics:
+            if metric in task_data.columns and not task_data[metric].isna().all():
+                best_idx = task_data[metric].idxmax()
+                best_row = task_data.loc[best_idx]
+                best_per_task[task][metric] = {
+                    "preference_vector": best_row["preference_vector"],
+                    "value": float(best_row[metric]),
+                }
+
+    # Compute distance to utopia for each preference vector
+    utopia_distances = {}
+    for result in all_results:
+        pref_vec = to_python(result["preference_vector"])  # Convert to regular list
+        pref_label = f"[{', '.join([f'{x:.2f}' for x in pref_vec])}]"
+
+        for metric in metrics:
+            # Compute utopia point for this metric
+            if reference_points:
+                utopia_scores = []
+                for task in task_names:
+                    max_score = 0
+                    for ref_task, ref_metrics in reference_points.items():
+                        score = ref_metrics.get(f"{task}_{metric}", 0)
+                        max_score = max(max_score, score)
+                    utopia_scores.append(max_score)
+                utopia_point = np.array(utopia_scores)
+            else:
+                utopia_point = np.array([
+                    max(r["task_results"][task].metrics[metric] for r in all_results)
+                    for task in task_names
+                ])
+
+            # Get scores for this preference vector
+            scores = np.array([result["task_results"][task].metrics[metric] for task in task_names])
+
+            # Calculate distance
+            distance = float(np.linalg.norm(scores - utopia_point))
+
+            if pref_label not in utopia_distances:
+                utopia_distances[pref_label] = {}
+            utopia_distances[pref_label][metric] = {
+                "distance": distance,
+                "utopia_point": utopia_point.tolist(),
+            }
+
+    # Create export dictionary with proper type conversion
+    export_data = {
+        "method": str(method_name) if method_name else None,
+        "tasks": list(task_names),  # Ensure it's a regular list
+        "metrics": list(metrics),  # Ensure it's a regular list
+        "results": rows,
+        "summary_statistics": summary_stats,
+        "best_per_task": best_per_task,
+        "utopia_distances": utopia_distances,
+    }
+
+    # Save to files if output directory provided
+    if output_dir:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save as JSON
+        json_path = output_dir / "comprehensive_results.json"
+        with open(json_path, 'w') as f:
+            json.dump(export_data, f, indent=2)
+        logger.info(f"Saved JSON results to: {json_path}")
+
+        # Save DataFrame as CSV
+        csv_path = output_dir / "comprehensive_results.csv"
+        df.to_csv(csv_path, index=False)
+        logger.info(f"Saved CSV results to: {csv_path}")
+
+        # Save summary statistics as separate CSV
+        if summary_stats:
+            summary_df = pd.DataFrame(summary_stats).T
+            summary_csv_path = output_dir / "summary_statistics.csv"
+            summary_df.to_csv(summary_csv_path)
+            logger.info(f"Saved summary statistics to: {summary_csv_path}")
+
+        # Save distance to utopia as CSV
+        if utopia_distances:
+            dist_rows = []
+            for pref_label, metric_dists in utopia_distances.items():
+                for metric, dist_data in metric_dists.items():
+                    dist_rows.append({
+                        "preference_vector": pref_label,
+                        "metric": metric,
+                        "distance": dist_data["distance"],
+                        "utopia_point": str(dist_data["utopia_point"]),
+                    })
+            dist_df = pd.DataFrame(dist_rows)
+            dist_csv_path = output_dir / "utopia_distances.csv"
+            dist_df.to_csv(dist_csv_path, index=False)
+            logger.info(f"Saved utopia distances to: {dist_csv_path}")
+
+    logger.info("Results export completed successfully")
+    return export_data

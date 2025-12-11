@@ -1,4 +1,17 @@
-"""Weights & Biases visualization utilities"""
+"""Weights & Biases visualization utilities
+
+Note on Windows Temp File Issues:
+    Some users on Windows may encounter FileNotFoundError with W&B table.json files
+    in the temp directory. This is a known issue with W&B's handling of temporary files
+    on Windows systems. If you encounter this error:
+
+    1. The error is non-critical - your visualizations are still saved locally
+    2. You can disable bar chart upload by setting: wandb.upload_bar_charts=false
+    3. The underlying W&B bug is tracked at: https://github.com/wandb/wandb/issues/1869
+
+    The functions in this module use defensive error handling to gracefully degrade
+    when W&B encounters these temporary file issues.
+"""
 
 import logging
 from pathlib import Path
@@ -314,50 +327,76 @@ def log_benchmark_results_as_bar_charts(
             logger.warning("W&B run not initialized, skipping bar chart logging")
             return
 
+        # Track successful logs
+        successful_logs = 0
+        failed_logs = []
+
         # Create a table for each metric
         for metric_name in metrics:
-            # Prepare table data: one row per (preference_vector, task) combination
-            table_data = []
+            try:
+                # Prepare table data: one row per (preference_vector, task) combination
+                table_data = []
 
-            for result in all_results:
-                pref_vec = result["preference_vector"]
-                pref_str = "[" + ", ".join([f"{p:.2f}" for p in pref_vec]) + "]"
-                task_results = result["task_results"]
+                for result in all_results:
+                    pref_vec = result["preference_vector"]
+                    pref_str = "[" + ", ".join([f"{p:.2f}" for p in pref_vec]) + "]"
+                    task_results = result["task_results"]
 
-                for task_name in task_names:
-                    metric_value = task_results[task_name].metrics.get(metric_name, 0.0)
-                    table_data.append([
-                        pref_str,
-                        task_name,
-                        float(metric_value)
-                    ])
+                    for task_name in task_names:
+                        metric_value = task_results[task_name].metrics.get(metric_name, 0.0)
+                        table_data.append([
+                            pref_str,
+                            task_name,
+                            float(metric_value)
+                        ])
 
-            # Create W&B table
-            table = wandb.Table(
-                columns=["preference_vector", "task", metric_name],
-                data=table_data,
-            )
+                # Create W&B table
+                table = wandb.Table(
+                    columns=["preference_vector", "task", metric_name],
+                    data=table_data,
+                )
 
-            # Log as bar chart
-            wandb.log({
-                f"benchmark_results/{metric_name}_by_task": wandb.plot.bar(
-                    table,
-                    "task",
-                    metric_name,
-                    title=f"{metric_name.replace('_', ' ').title()} by Task"
-                ),
-                f"benchmark_results/{metric_name}_by_preference": wandb.plot.bar(
-                    table,
-                    "preference_vector",
-                    metric_name,
-                    title=f"{metric_name.replace('_', ' ').title()} by Preference Vector"
-                ),
-                f"benchmark_results/{metric_name}_table": table,
-            })
+                # Log as bar chart
+                # Note: Using commit=False to batch multiple logs together
+                # This can help avoid Windows temp file issues with W&B
+                wandb.log({
+                    f"benchmark_results/{metric_name}_by_task": wandb.plot.bar(
+                        table,
+                        "task",
+                        metric_name,
+                        title=f"{metric_name.replace('_', ' ').title()} by Task"
+                    ),
+                    f"benchmark_results/{metric_name}_by_preference": wandb.plot.bar(
+                        table,
+                        "preference_vector",
+                        metric_name,
+                        title=f"{metric_name.replace('_', ' ').title()} by Preference Vector"
+                    ),
+                    f"benchmark_results/{metric_name}_table": table,
+                }, commit=False)
 
-        logger.info(f"Logged {len(metrics)} benchmark result bar charts to W&B")
+                successful_logs += 1
+
+            except Exception as e:
+                # Log individual metric failures but continue with others
+                logger.warning(f"Failed to log bar chart for metric '{metric_name}': {e}")
+                failed_logs.append(metric_name)
+                continue
+
+        # Final commit to push all batched logs
+        if successful_logs > 0:
+            try:
+                wandb.log({}, commit=True)
+                logger.info(f"✓ Logged {successful_logs}/{len(metrics)} benchmark result bar charts to W&B")
+            except Exception as e:
+                logger.warning(f"Failed to commit W&B logs (data may still be saved): {e}")
+
+        if failed_logs:
+            logger.warning(f"Failed to log bar charts for metrics: {', '.join(failed_logs)}")
 
     except ImportError:
         logger.warning("wandb not installed, skipping bar chart logging")
     except Exception as e:
         logger.error(f"Failed to log bar charts to W&B: {e}")
+        import traceback
+        logger.debug(f"Full traceback: {traceback.format_exc()}")

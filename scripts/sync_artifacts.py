@@ -269,6 +269,8 @@ def _sync_upload(
     entity: Optional[str],
 ) -> None:
     """Upload local files that don't exist or changed in W&B"""
+    import wandb
+
     # Find all matching files
     files = list(local_path.glob(pattern))
     if not files:
@@ -280,6 +282,8 @@ def _sync_upload(
     uploaded = 0
     skipped = 0
 
+    # Collect files to upload
+    files_to_upload = []
     for file_path in files:
         artifact_name = file_path.stem
         file_hash = get_file_hash(file_path)
@@ -294,18 +298,50 @@ def _sync_upload(
                 skipped += 1
                 continue
 
-        # Upload artifact
-        logger.info(f"  ↑ Upload {artifact_name}")
-        upload_artifact(
-            artifact_path=file_path,
-            artifact_name=artifact_name,
-            artifact_type=artifact_type,
-            project=project,
-            entity=entity,
-            metadata={'file_hash': file_hash},
-            description=f"Auto-synced from {local_path}",
-        )
-        uploaded += 1
+        files_to_upload.append((file_path, artifact_name, file_hash))
+
+    # If nothing to upload, exit early
+    if not files_to_upload:
+        logger.info(f"[UPLOAD] Complete: {uploaded} uploaded, {skipped} skipped")
+        return
+
+    # Create a single wandb run for all uploads
+    logger.info(f"Initializing W&B run for batch upload (project: {project}, entity: {entity or 'default'})")
+    run = wandb.init(
+        project=project,
+        entity=entity,
+        job_type="sync_artifacts",
+        name=f"sync_{len(files_to_upload)}_artifacts",
+    )
+
+    try:
+        # Upload each artifact using the same run
+        for file_path, artifact_name, file_hash in files_to_upload:
+            logger.info(f"  ↑ Upload {artifact_name}")
+
+            # Create artifact
+            artifact = wandb.Artifact(
+                name=artifact_name,
+                type=artifact_type,
+                description=f"Auto-synced from {local_path}",
+                metadata={'file_hash': file_hash},
+            )
+
+            # Add file
+            artifact.add_file(str(file_path))
+
+            # Upload
+            run.log_artifact(artifact)
+
+            # Wait for upload to complete
+            artifact.wait()
+
+            uploaded += 1
+            logger.info(f"    ✓ Successfully uploaded: {artifact_name}")
+    finally:
+        # Finish the single run
+        logger.info("Finishing W&B run")
+        run.finish()
 
     logger.info(f"[UPLOAD] Complete: {uploaded} uploaded, {skipped} skipped")
 
