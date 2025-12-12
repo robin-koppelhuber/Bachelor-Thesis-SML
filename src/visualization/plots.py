@@ -825,6 +825,9 @@ def plot_performance_recovery(
         else:
             return "#1f77b4"  # Blue - balanced
 
+    # Calculate bar width based on number of preference vectors
+    bar_spacing = min(0.12, 0.8 / (num_prefs + 1))  # Adaptive spacing
+
     # Calculate expected and achieved for each preference vector and task
     for pref_idx, result in enumerate(all_results):
         pref_vec = result["preference_vector"]
@@ -832,7 +835,7 @@ def plot_performance_recovery(
         pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
         color = categorize_preference(pref_vec)
 
-        x_positions = np.arange(num_tasks) + pref_idx * 0.12
+        x_positions = np.arange(num_tasks) + pref_idx * bar_spacing
 
         expected_vals = []
         achieved_vals = []
@@ -855,7 +858,7 @@ def plot_performance_recovery(
             recovery_rates.append(recovery_rate)
 
         # Plot 1: Absolute values (expected vs achieved)
-        width = 0.1
+        width = bar_spacing * 0.8  # Scale width with spacing
         ax1.bar(x_positions - width/2, expected_vals, width,
                 alpha=0.6, color=color, edgecolor='black', linewidth=0.5)
         ax1.bar(x_positions + width/2, achieved_vals, width,
@@ -863,7 +866,7 @@ def plot_performance_recovery(
                 label=pref_label if pref_idx < 7 else None)  # Limit legend entries
 
         # Plot 2: Recovery percentage
-        bars = ax2.bar(x_positions, recovery_rates, width * 2,
+        bars = ax2.bar(x_positions, recovery_rates, width * 1.6,
                       alpha=0.8, color=color, edgecolor='black', linewidth=1,
                       label=pref_label if pref_idx < 7 else None)
 
@@ -880,14 +883,17 @@ def plot_performance_recovery(
                 bar.set_alpha(0.7)
 
     # Styling for Plot 1 (Absolute Values)
-    ax1.set_xticks(np.arange(num_tasks) + (num_prefs - 1) * 0.12 / 2)
-    ax1.set_xticklabels(formatted_task_names, fontsize=11, fontweight='bold')
+    ax1.set_xticks(np.arange(num_tasks) + (num_prefs - 1) * bar_spacing / 2)
+    ax1.set_xticklabels(formatted_task_names, fontsize=11, fontweight='bold', rotation=0)
     ax1.set_ylabel(f'{formatted_metric} (Absolute)', fontsize=12, fontweight='bold')
     ax1.set_xlabel('Task', fontsize=12, fontweight='bold')
     ax1.set_title(f'Performance Recovery: Expected vs. Achieved\n{formatted_metric}',
                   fontsize=13, fontweight='bold')
     ax1.grid(axis='y', alpha=0.3, linestyle='--')
     ax1.set_ylim(0, 1.0)
+
+    # Set x-axis limits to show all bars clearly
+    ax1.set_xlim(-0.2, num_tasks - 1 + (num_prefs - 1) * bar_spacing + 0.2)
 
     # Add legend with custom patches
     from matplotlib.patches import Patch
@@ -907,13 +913,16 @@ def plot_performance_recovery(
     ax2.axhline(y=100, color='black', linestyle='--', linewidth=1.5, alpha=0.7, label='100% Recovery')
     ax2.axhline(y=80, color='gray', linestyle=':', linewidth=1, alpha=0.5)
 
-    ax2.set_xticks(np.arange(num_tasks) + (num_prefs - 1) * 0.12 / 2)
-    ax2.set_xticklabels(formatted_task_names, fontsize=11, fontweight='bold')
+    ax2.set_xticks(np.arange(num_tasks) + (num_prefs - 1) * bar_spacing / 2)
+    ax2.set_xticklabels(formatted_task_names, fontsize=11, fontweight='bold', rotation=0)
     ax2.set_ylabel('Recovery Rate (%)', fontsize=12, fontweight='bold')
     ax2.set_xlabel('Task', fontsize=12, fontweight='bold')
     ax2.set_title(f'Performance Recovery Rate\n{formatted_metric} (Higher is Better)',
                   fontsize=13, fontweight='bold')
     ax2.grid(axis='y', alpha=0.3, linestyle='--')
+
+    # Set x-axis limits to show all bars clearly
+    ax2.set_xlim(-0.2, num_tasks - 1 + (num_prefs - 1) * bar_spacing + 0.2)
 
     # Add legend for recovery rates
     legend_elements2 = [

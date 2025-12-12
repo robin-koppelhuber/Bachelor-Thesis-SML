@@ -38,6 +38,7 @@ def generate_all_visualizations(
     output_dir: Optional[Path] = None,
     method_name: Optional[str] = None,
     reference_points: Optional[Dict[str, Dict[str, float]]] = None,
+    additional_metrics: Optional[List[str]] = None,
 ) -> Dict[str, plt.Figure]:
     """
     Generate all visualizations for benchmark results
@@ -50,6 +51,7 @@ def generate_all_visualizations(
         output_dir: Optional directory to save plots
         method_name: Optional method name for titles
         reference_points: Optional reference points from single-task fine-tuned models
+        additional_metrics: Optional list of additional metrics to generate separate plots for
 
     Returns:
         Dictionary mapping visualization names to matplotlib figures
@@ -61,20 +63,77 @@ def generate_all_visualizations(
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Performance heatmap (all preference vectors × all tasks)
-    try:
-        fig = generate_performance_heatmap(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "performance_heatmap" if output_dir else None,
-            method_name,
-        )
-        figures["performance_heatmap"] = fig
-    except Exception as e:
-        logger.error(f"Failed to generate performance heatmap: {e}")
+    # Determine which metrics to visualize
+    metrics_to_visualize = [metric_name]
+    if additional_metrics:
+        # Add additional metrics that aren't the primary metric
+        for metric in additional_metrics:
+            if metric != metric_name:
+                metrics_to_visualize.append(metric)
 
-    # 2. Radar charts for each preference vector
+    # Generate visualizations for each metric
+    logger.info(f"Generating visualizations for {len(metrics_to_visualize)} metrics: {', '.join(metrics_to_visualize)}")
+
+    for current_metric in metrics_to_visualize:
+        metric_suffix = f"_{current_metric}" if current_metric != metric_name else ""
+        logger.info(f"\nGenerating visualizations for metric: {current_metric}")
+
+        # 1. Performance heatmap (all preference vectors × all tasks)
+        try:
+            fig = generate_performance_heatmap(
+                all_results,
+                task_names,
+                current_metric,
+                output_dir / f"performance_heatmap{metric_suffix}" if output_dir else None,
+                method_name,
+            )
+            figures[f"performance_heatmap{metric_suffix}"] = fig
+        except Exception as e:
+            logger.error(f"Failed to generate performance heatmap for {current_metric}: {e}")
+
+        # 2. Parallel coordinates visualization
+        try:
+            fig = plot_parallel_coordinates(
+                all_results,
+                task_names,
+                current_metric,
+                output_dir / f"parallel_coordinates{metric_suffix}" if output_dir else None,
+                reference_points,
+            )
+            figures[f"parallel_coordinates{metric_suffix}"] = fig
+        except Exception as e:
+            logger.error(f"Failed to generate parallel coordinates plot for {current_metric}: {e}")
+
+        # 3. Distance to utopia analysis
+        try:
+            fig = plot_distance_to_utopia(
+                all_results,
+                task_names,
+                current_metric,
+                output_dir / f"distance_to_utopia{metric_suffix}" if output_dir else None,
+                reference_points,
+            )
+            figures[f"distance_to_utopia{metric_suffix}"] = fig
+        except Exception as e:
+            logger.error(f"Failed to generate distance to utopia plot for {current_metric}: {e}")
+
+        # 4. Performance recovery analysis
+        try:
+            fig = plot_performance_recovery(
+                all_results,
+                task_names,
+                current_metric,
+                output_dir / f"performance_recovery{metric_suffix}" if output_dir else None,
+                reference_points,
+            )
+            figures[f"performance_recovery{metric_suffix}"] = fig
+        except Exception as e:
+            logger.error(f"Failed to generate performance recovery plot for {current_metric}: {e}")
+
+    # Generate metric-agnostic visualizations (using primary metric only)
+    # These don't need to be repeated for each metric
+
+    # 5. Radar charts for each preference vector (using primary metric)
     try:
         radar_figs = generate_radar_charts(
             all_results,
@@ -87,7 +146,7 @@ def generate_all_visualizations(
     except Exception as e:
         logger.error(f"Failed to generate radar charts: {e}")
 
-    # 3. Task interference matrix
+    # 6. Task interference matrix (using primary metric)
     try:
         fig = generate_task_interference_viz(
             all_results,
@@ -100,7 +159,7 @@ def generate_all_visualizations(
     except Exception as e:
         logger.error(f"Failed to generate task interference visualization: {e}")
 
-    # 4. Pareto frontiers for all task pairs
+    # 7. Pareto frontiers for all task pairs (using primary metric only)
     try:
         pareto_figs = generate_pareto_frontiers(
             all_results,
@@ -114,7 +173,7 @@ def generate_all_visualizations(
     except Exception as e:
         logger.error(f"Failed to generate Pareto frontiers: {e}")
 
-    # 5. Preference alignment plots for selected preference vectors
+    # 8. Preference alignment plots for selected preference vectors (using primary metric only)
     try:
         alignment_figs = generate_preference_alignment_plots(
             all_results,
@@ -126,45 +185,6 @@ def generate_all_visualizations(
         figures.update(alignment_figs)
     except Exception as e:
         logger.error(f"Failed to generate preference alignment plots: {e}")
-
-    # 6. Parallel coordinates visualization
-    try:
-        fig = plot_parallel_coordinates(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "parallel_coordinates" if output_dir else None,
-            reference_points,
-        )
-        figures["parallel_coordinates"] = fig
-    except Exception as e:
-        logger.error(f"Failed to generate parallel coordinates plot: {e}")
-
-    # 7. Distance to utopia analysis
-    try:
-        fig = plot_distance_to_utopia(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "distance_to_utopia" if output_dir else None,
-            reference_points,
-        )
-        figures["distance_to_utopia"] = fig
-    except Exception as e:
-        logger.error(f"Failed to generate distance to utopia plot: {e}")
-
-    # 8. Performance recovery analysis
-    try:
-        fig = plot_performance_recovery(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "performance_recovery" if output_dir else None,
-            reference_points,
-        )
-        figures["performance_recovery"] = fig
-    except Exception as e:
-        logger.error(f"Failed to generate performance recovery plot: {e}")
 
     logger.info(f"Generated {len(figures)} visualizations successfully")
     return figures

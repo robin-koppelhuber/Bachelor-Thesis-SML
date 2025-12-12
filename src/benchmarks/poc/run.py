@@ -781,6 +781,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             output_dir=output_dir,
             method_name=cfg.method.name,
             reference_points=reference_points,
+            additional_metrics=list(cfg.benchmark.evaluation.metrics),
         )
 
         logger.info(f"✓ Generated {len(figures)} visualizations")

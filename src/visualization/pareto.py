@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
+from src.visualization.plots import format_task_name
+
 
 def compute_pareto_frontier_2d(
     points: np.ndarray,
@@ -287,10 +289,6 @@ def plot_pareto_frontier_2d(
 
     # Labels and styling
     # Format task names properly (ag_news -> AG News, imdb -> IMDB, etc.)
-    def format_task_name(name: str) -> str:
-        parts = name.replace('_', ' ').split()
-        return ' '.join([part.upper() if len(part) <= 4 else part.title() for part in parts])
-
     formatted_task1 = format_task_name(task_names[0])
     formatted_task2 = format_task_name(task_names[1])
 
