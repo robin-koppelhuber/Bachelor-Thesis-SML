@@ -1,0 +1,33 @@
+# @package _global_.datasets.mnli
+name: cola
+display_name: "CoLA"
+task_type: classification
+num_labels: 2
+
+# HuggingFace dataset
+hf_dataset:
+  path: nyu-mll/cola # ~10.7k samples
+  subset: cola
+  split:
+    train: train
+    validation: validation_matched
+    test: validation_matched  # Use validation as test
+
+# Fine-tuned model checkpoint
+finetuned_checkpoint: textattack/roberta-base-CoLA
+
+# Preprocessing
+preprocessing:
+  text_column: premise  # Will concatenate with hypothesis
+  text_column_2: hypothesis
+  label_column: label
+  max_length: 512
+  truncation: true
+  padding: max_length
+
+# Evaluation
+evaluation:
+  batch_size: 32
+  metrics:
+    - accuracy
+    - f1_macro

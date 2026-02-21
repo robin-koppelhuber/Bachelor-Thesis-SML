@@ -6,7 +6,7 @@ num_labels: 2
 
 # HuggingFace dataset
 hf_dataset:
-  path: nyu-mll/glue
+  path: nyu-mll/glue # ~5.8k samples
   subset: mrpc
   split:
     train: train

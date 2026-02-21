@@ -15,10 +15,12 @@ hf_dataset:
 finetuned_checkpoint: textattack/roberta-base-imdb
 
 # Preprocessing
+# imdb samples are way longer than GLUE dataset (up to 12k)
+# BERT and RoBERTA have a context length of 512
 preprocessing:
   text_column: text
   label_column: label
-  max_length: 512
+  max_length: 5000
   truncation: true
   padding: max_length
 
