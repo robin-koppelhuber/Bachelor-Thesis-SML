@@ -61,10 +61,7 @@ def setup_logging(
     elif console_format == "detailed":
         console_fmt = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
     elif console_format == "json":
-        console_fmt = (
-            '{"time": "%(asctime)s", "name": "%(name)s", '
-            '"level": "%(levelname)s", "message": "%(message)s"}'
-        )
+        console_fmt = '{"time": "%(asctime)s", "name": "%(name)s", "level": "%(levelname)s", "message": "%(message)s"}'
     else:
         console_fmt = "%(levelname)s: %(message)s"
 

@@ -199,8 +199,7 @@ class BaseTrainingMethod(ABC):
                         # Use select for reproducible sampling
                         dataset = dataset.select(range(self.max_samples_per_task))
                         logger.info(
-                            f"  Limited dataset: {original_size} -> {self.max_samples_per_task} samples "
-                            f"(saves ~{(1 - self.max_samples_per_task/original_size)*100:.0f}% RAM)"
+                            f"  Limited dataset: {original_size} -> {self.max_samples_per_task} samples (saves ~{(1 - self.max_samples_per_task / original_size) * 100:.0f}% RAM)"
                         )
 
             # Preprocess with caching enabled
@@ -244,7 +243,11 @@ class BaseTrainingMethod(ABC):
         return task_dataloaders
 
     def _initialize_model(
-        self, base_model_id: str, dataset_configs: Dict, device: torch.device, cache_dir: Optional[str] = None
+        self,
+        base_model_id: str,
+        dataset_configs: Dict,
+        device: torch.device,
+        cache_dir: Optional[str] = None,
     ) -> torch.nn.Module:
         """
         Initialize model for multi-task training
@@ -280,9 +283,7 @@ class BaseTrainingMethod(ABC):
 
         return model
 
-    def _setup_optimizer(
-        self, model: torch.nn.Module, train_dataloaders: Dict
-    ) -> Tuple[torch.optim.Optimizer, Any]:
+    def _setup_optimizer(self, model: torch.nn.Module, train_dataloaders: Dict) -> Tuple[torch.optim.Optimizer, Any]:
         """
         Setup optimizer and learning rate scheduler
 
@@ -316,7 +317,7 @@ class BaseTrainingMethod(ABC):
 
         total_steps = self.num_epochs * min_steps_per_epoch
 
-        logger.info(f"\nOptimizer setup:")
+        logger.info("\nOptimizer setup:")
         logger.info(f"  Steps per epoch: {min_steps_per_epoch}")
         logger.info(f"  Total steps: {total_steps}")
         logger.info(f"  Warmup steps: {self.warmup_steps}")
@@ -391,10 +392,7 @@ class BaseTrainingMethod(ABC):
         num_steps = 0
 
         # Create iterators for each task
-        task_iterators = {
-            name: iter(dataloader)
-            for name, dataloader in task_dataloaders.items()
-        }
+        task_iterators = {name: iter(dataloader) for name, dataloader in task_dataloaders.items()}
 
         # Determine number of steps (use minimum dataloader length)
         # For streaming datasets, we need to handle them differently
@@ -410,7 +408,7 @@ class BaseTrainingMethod(ABC):
                 min_steps = 10000 // self.batch_size
             logger.info(f"  Streaming mode: using {min_steps} steps per epoch")
 
-        logger.info(f"\nEpoch {epoch+1}/{self.num_epochs}")
+        logger.info(f"\nEpoch {epoch + 1}/{self.num_epochs}")
         logger.info(f"  Training steps: {min_steps}")
 
         step = 0
@@ -421,9 +419,11 @@ class BaseTrainingMethod(ABC):
             # Use autocast for mixed precision
             if scaler is not None:
                 from torch.amp import autocast
-                autocast_context = autocast('cuda')
+
+                autocast_context = autocast("cuda")
             else:
                 from contextlib import nullcontext
+
                 autocast_context = nullcontext()
 
             with autocast_context:
@@ -474,7 +474,7 @@ class BaseTrainingMethod(ABC):
 
                 # If we couldn't get batches from all tasks, stop
                 if not all_batches_available:
-                    logger.info(f"  Early stopping at step {step+1} (data exhausted)")
+                    logger.info(f"  Early stopping at step {step + 1} (data exhausted)")
                     break
 
                 task_losses = temp_task_losses
@@ -531,14 +531,13 @@ class BaseTrainingMethod(ABC):
             # Periodic logging (before incrementing step to get correct count)
             if (step + 1) % 100 == 0 or step == min_steps - 1:
                 logger.info(
-                    f"  Step {step+1}/{min_steps} - "
-                    f"Loss: {multi_task_loss.item():.4f} - "
-                    f"Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
+                    f"  Step {step + 1}/{min_steps} - Loss: {multi_task_loss.item():.4f} - Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
                 )
 
                 # Log to W&B every 100 steps
                 try:
                     import wandb
+
                     if wandb.run:
                         # Create prefix for this preference vector's section
                         prefix = wandb_prefix if wandb_prefix else "train"
@@ -641,7 +640,7 @@ class BaseTrainingMethod(ABC):
         model = self._initialize_model(base_model, dataset_configs, device, cache_dir=model_cache_dir)
 
         # Enable gradient checkpointing for memory efficiency (if available)
-        if hasattr(model, 'gradient_checkpointing_enable'):
+        if hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
             logger.info("Gradient checkpointing enabled for memory efficiency")
 
@@ -655,6 +654,7 @@ class BaseTrainingMethod(ABC):
         if self.use_torch_compile:
             try:
                 import platform
+
                 if platform.system() != "Windows":
                     # Linux/Mac: use configured compilation mode
                     model = torch.compile(model, mode=self.torch_compile_mode)
@@ -681,20 +681,20 @@ class BaseTrainingMethod(ABC):
         scaler = None
         if self.use_fp16 and torch.cuda.is_available():
             from torch.amp import GradScaler
-            scaler = GradScaler('cuda')
+
+            scaler = GradScaler("cuda")
             logger.info("Mixed precision training (FP16) enabled")
 
         # 7. Check for existing checkpoint to resume from
         start_epoch = 0
-        if (self.auto_resume and epoch_checkpoint_dir and model_identifier and
-            self.save_epoch_checkpoints):
+        if self.auto_resume and epoch_checkpoint_dir and model_identifier and self.save_epoch_checkpoints:
             latest_checkpoint = self._find_latest_checkpoint(epoch_checkpoint_dir, model_identifier)
             if latest_checkpoint:
                 logger.info("\nResuming training from checkpoint...")
                 start_epoch = self._load_epoch_checkpoint(
                     latest_checkpoint, model, optimizer, scheduler, device, scaler
                 )
-                logger.info(f"Resuming from epoch {start_epoch+1}/{self.num_epochs}")
+                logger.info(f"Resuming from epoch {start_epoch + 1}/{self.num_epochs}")
 
         # 8. Create W&B prefix for this preference vector
         # Format: "pref_0.25_0.25_0.25_0.25" for better organization in W&B
@@ -717,19 +717,20 @@ class BaseTrainingMethod(ABC):
                 **training_kwargs,
             )
 
-            logger.info(f"Epoch {epoch+1}/{self.num_epochs} - Avg Loss: {avg_loss:.4f}")
+            logger.info(f"Epoch {epoch + 1}/{self.num_epochs} - Avg Loss: {avg_loss:.4f}")
 
             # Log to W&B if available
             try:
                 import wandb
+
                 if wandb.run:
                     epoch_log_dict = {
                         f"{wandb_prefix}/epoch": epoch + 1,
                         f"{wandb_prefix}/loss": avg_loss,
-                        f"{wandb_prefix}/learning_rate": optimizer.param_groups[0]['lr'],
+                        f"{wandb_prefix}/learning_rate": optimizer.param_groups[0]["lr"],
                     }
                     wandb.log(epoch_log_dict, step=epoch + 1)
-                    logger.info(f"Logged epoch {epoch+1} to W&B under '{wandb_prefix}'")
+                    logger.info(f"Logged epoch {epoch + 1} to W&B under '{wandb_prefix}'")
                 else:
                     logger.warning("W&B imported but wandb.run is None - logging disabled")
             except (ImportError, AttributeError) as e:
@@ -740,20 +741,24 @@ class BaseTrainingMethod(ABC):
             # Save epoch checkpoint if enabled
             if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:
                 self._save_epoch_checkpoint(
-                    model, optimizer, scheduler, epoch, epoch_checkpoint_dir,
-                    model_identifier, scaler
+                    model,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    epoch_checkpoint_dir,
+                    model_identifier,
+                    scaler,
                 )
 
                 # Cleanup old checkpoints if we only want to keep the latest
                 if not self.keep_all_epoch_checkpoints:
-                    self._cleanup_old_checkpoints(
-                        epoch_checkpoint_dir, model_identifier, keep_epoch=epoch
-                    )
+                    self._cleanup_old_checkpoints(epoch_checkpoint_dir, model_identifier, keep_epoch=epoch)
 
             # Clear cache after each epoch for memory efficiency
             if device.type == "cuda":
                 torch.cuda.empty_cache()
                 import gc
+
                 gc.collect()
 
         # 10. Save final trained model if requested
@@ -766,8 +771,10 @@ class BaseTrainingMethod(ABC):
 
                 from src.utils.wandb_utils import log_artifact
 
-                if wandb.run and wandb.config.get('wandb', {}).get('upload_models', False):
-                    artifact_name = f"{self.__class__.__name__}_{model_identifier}" if model_identifier else self.__class__.__name__
+                if wandb.run and wandb.config.get("wandb", {}).get("upload_models", False):
+                    artifact_name = (
+                        f"{self.__class__.__name__}_{model_identifier}" if model_identifier else self.__class__.__name__
+                    )
                     log_artifact(
                         artifact_path=Path(save_path),
                         artifact_name=artifact_name,
@@ -777,7 +784,7 @@ class BaseTrainingMethod(ABC):
                             "preference_vector": preference_vector.tolist(),
                             "num_epochs": self.num_epochs,
                             "learning_rate": self.learning_rate,
-                        }
+                        },
                     )
                     logger.info(f"  Uploaded model to W&B as artifact: {artifact_name}")
             except (ImportError, AttributeError, Exception) as e:
@@ -799,6 +806,7 @@ class BaseTrainingMethod(ABC):
 
         # 13. Flatten and return
         from src.benchmarks.poc.run import flatten_task_vector
+
         flattened = flatten_task_vector(task_vector_dict)
 
         logger.info(f"{self.__class__.__name__} completed!")
@@ -829,12 +837,12 @@ class BaseTrainingMethod(ABC):
 
             state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
             save_file(state_dict, str(save_path))
-            logger.info(f"  ✓ Model saved successfully")
+            logger.info("  ✓ Model saved successfully")
         except ImportError:
             # Fallback to torch.save if safetensors not available
             logger.warning("  safetensors not available, using torch.save instead")
             torch.save(model.state_dict(), save_path)
-            logger.info(f"  ✓ Model saved successfully (torch format)")
+            logger.info("  ✓ Model saved successfully (torch format)")
 
     def _load_trained_model(
         self,
@@ -868,12 +876,12 @@ class BaseTrainingMethod(ABC):
 
             state_dict = load_file(str(load_path), device=str(device) if device else "cpu")
             model.load_state_dict(state_dict)
-            logger.info(f"  ✓ Model loaded successfully (safetensors format)")
+            logger.info("  ✓ Model loaded successfully (safetensors format)")
         except (ImportError, Exception):
             # Fallback to torch.load
             state_dict = torch.load(load_path, map_location=device if device else "cpu")
             model.load_state_dict(state_dict)
-            logger.info(f"  ✓ Model loaded successfully (torch format)")
+            logger.info("  ✓ Model loaded successfully (torch format)")
 
         return model
 
@@ -925,18 +933,18 @@ class BaseTrainingMethod(ABC):
         """
         checkpoint_path = self._get_epoch_checkpoint_path(checkpoint_dir, model_identifier, epoch)
 
-        logger.info(f"  Saving epoch {epoch+1} checkpoint to {checkpoint_path.name}...")
+        logger.info(f"  Saving epoch {epoch + 1} checkpoint to {checkpoint_path.name}...")
 
         # Prepare checkpoint data
         checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': {k: v.cpu() for k, v in model.state_dict().items()},
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
+            "epoch": epoch,
+            "model_state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
         }
 
         if scaler is not None:
-            checkpoint['scaler_state_dict'] = scaler.state_dict()
+            checkpoint["scaler_state_dict"] = scaler.state_dict()
 
         # Save checkpoint using torch.save (safetensors doesn't support optimizer states)
         torch.save(checkpoint, checkpoint_path)
@@ -971,15 +979,15 @@ class BaseTrainingMethod(ABC):
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
 
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-        if scaler is not None and 'scaler_state_dict' in checkpoint:
-            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        if scaler is not None and "scaler_state_dict" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
-        resume_epoch = checkpoint['epoch'] + 1  # Next epoch to train
-        logger.info(f"  ✓ Checkpoint loaded (resuming from epoch {resume_epoch+1})")
+        resume_epoch = checkpoint["epoch"] + 1  # Next epoch to train
+        logger.info(f"  ✓ Checkpoint loaded (resuming from epoch {resume_epoch + 1})")
 
         return resume_epoch
 
@@ -1025,7 +1033,7 @@ class BaseTrainingMethod(ABC):
 
         # Return checkpoint with highest epoch number
         latest_epoch, latest_path = max(checkpoint_epochs, key=lambda x: x[0])
-        logger.info(f"Found existing checkpoint: {latest_path.name} (epoch {latest_epoch+1})")
+        logger.info(f"Found existing checkpoint: {latest_path.name} (epoch {latest_epoch + 1})")
         return latest_path
 
     def _cleanup_old_checkpoints(
@@ -1067,7 +1075,11 @@ class BaseTrainingMethod(ABC):
                         logger.warning(f"  Failed to delete {cp.name}: {e}")
 
     def _get_training_kwargs(
-        self, task_names: list, preference_vector: np.ndarray, dataset_configs: Dict, cache_dir: Optional[str] = None
+        self,
+        task_names: list,
+        preference_vector: np.ndarray,
+        dataset_configs: Dict,
+        cache_dir: Optional[str] = None,
     ) -> Dict:
         """
         Get method-specific kwargs to pass to training loop

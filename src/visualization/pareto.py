@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import numpy as np
 
 from src.visualization.plots import format_task_name
@@ -120,7 +119,7 @@ def plot_pareto_frontier_2d(
             points[non_pareto_mask, 1],
             s=60,
             alpha=0.4,
-            color='gray',
+            color="gray",
             label="Dominated Solutions",
             zorder=3,
         )
@@ -187,10 +186,11 @@ def plot_pareto_frontier_2d(
             color = colors_list[i % len(colors_list)]
 
             # Create cleaner label: "Fine-tuned: AG News" instead of "Ag News Optimal"
-            task_name = opt_name.replace('_optimal', '').replace('_', ' ')
+            task_name = opt_name.replace("_optimal", "").replace("_", " ")
             # Capitalize properly: ag_news -> AG News, imdb -> IMDB, mnli -> MNLI, mrpc -> MRPC
+            # Fix to use displayname of task instead
             task_name_parts = task_name.split()
-            formatted_name = ' '.join([part.upper() if len(part) <= 4 else part.title() for part in task_name_parts])
+            formatted_name = " ".join([part.upper() if len(part) <= 4 else part.title() for part in task_name_parts])
             label = f"Fine-tuned: {formatted_name}"
 
             ax.scatter(
@@ -277,14 +277,16 @@ def plot_pareto_frontier_2d(
     if len(pareto_points) > len(labeled_points):
         unlabeled_count = len(pareto_points) - len(labeled_points)
         ax.text(
-            0.98, 0.02, f"+ {unlabeled_count} other Pareto-optimal solution(s)",
+            0.98,
+            0.02,
+            f"+ {unlabeled_count} other Pareto-optimal solution(s)",
             transform=ax.transAxes,
             fontsize=8,
-            verticalalignment='bottom',
-            horizontalalignment='right',
-            style='italic',
-            color='gray',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7, edgecolor='gray')
+            verticalalignment="bottom",
+            horizontalalignment="right",
+            style="italic",
+            color="gray",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.7, edgecolor="gray"),
         )
 
     # Labels and styling
@@ -292,17 +294,20 @@ def plot_pareto_frontier_2d(
     formatted_task1 = format_task_name(task_names[0])
     formatted_task2 = format_task_name(task_names[1])
 
-    ax.set_xlabel(f"{formatted_task1} Performance", fontsize=12, fontweight='bold')
-    ax.set_ylabel(f"{formatted_task2} Performance", fontsize=12, fontweight='bold')
+    ax.set_xlabel(f"{formatted_task1} Performance", fontsize=12, fontweight="bold")
+    ax.set_ylabel(f"{formatted_task2} Performance", fontsize=12, fontweight="bold")
 
     if title:
-        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.set_title(title, fontsize=14, fontweight="bold")
     else:
-        ax.set_title(f"Pareto Frontier Analysis: {formatted_task1} vs {formatted_task2}",
-                    fontsize=14, fontweight='bold')
+        ax.set_title(
+            f"Pareto Frontier Analysis: {formatted_task1} vs {formatted_task2}",
+            fontsize=14,
+            fontweight="bold",
+        )
 
-    ax.legend(loc='best', fontsize=10, framealpha=0.9)
-    ax.grid(alpha=0.3, linestyle='--')
+    ax.legend(loc="best", fontsize=10, framealpha=0.9)
+    ax.grid(alpha=0.3, linestyle="--")
     ax.set_xlim(max(0, nadir_point[0] - 0.05), min(1.0, utopia_point[0] + 0.05))
     ax.set_ylim(max(0, nadir_point[1] - 0.05), min(1.0, utopia_point[1] + 0.05))
 
@@ -311,17 +316,20 @@ def plot_pareto_frontier_2d(
     n_pareto = len(pareto_points)
     stats_text = f"Pareto Solutions: {n_pareto}\nHypervolume: {hypervolume:.3f}"
     ax.text(
-        0.02, 0.98, stats_text,
+        0.02,
+        0.98,
+        stats_text,
         transform=ax.transAxes,
         fontsize=10,
-        verticalalignment='top',
-        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
     )
 
     plt.tight_layout()
 
     if save_path:
         from src.visualization.plots import save_plot
+
         save_plot(fig, save_path)
 
     return fig

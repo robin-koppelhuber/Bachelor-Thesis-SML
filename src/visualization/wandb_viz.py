@@ -175,12 +175,14 @@ def log_pareto_frontier_to_wandb(
 
         for i, (config_name, scores) in enumerate(results.items()):
             is_pareto = i in pareto_indices
-            table_data.append([
-                config_name,
-                float(scores[0]),
-                float(scores[1]),
-                is_pareto,
-            ])
+            table_data.append(
+                [
+                    config_name,
+                    float(scores[0]),
+                    float(scores[1]),
+                    is_pareto,
+                ]
+            )
 
         # Create W&B table
         table = wandb.Table(
@@ -344,11 +346,7 @@ def log_benchmark_results_as_bar_charts(
 
                     for task_name in task_names:
                         metric_value = task_results[task_name].metrics.get(metric_name, 0.0)
-                        table_data.append([
-                            pref_str,
-                            task_name,
-                            float(metric_value)
-                        ])
+                        table_data.append([pref_str, task_name, float(metric_value)])
 
                 # Create W&B table
                 table = wandb.Table(
@@ -359,21 +357,24 @@ def log_benchmark_results_as_bar_charts(
                 # Log as bar chart
                 # Note: Using commit=False to batch multiple logs together
                 # This can help avoid Windows temp file issues with W&B
-                wandb.log({
-                    f"benchmark_results/{metric_name}_by_task": wandb.plot.bar(
-                        table,
-                        "task",
-                        metric_name,
-                        title=f"{metric_name.replace('_', ' ').title()} by Task"
-                    ),
-                    f"benchmark_results/{metric_name}_by_preference": wandb.plot.bar(
-                        table,
-                        "preference_vector",
-                        metric_name,
-                        title=f"{metric_name.replace('_', ' ').title()} by Preference Vector"
-                    ),
-                    f"benchmark_results/{metric_name}_table": table,
-                }, commit=False)
+                wandb.log(
+                    {
+                        f"benchmark_results/{metric_name}_by_task": wandb.plot.bar(
+                            table,
+                            "task",
+                            metric_name,
+                            title=f"{metric_name.replace('_', ' ').title()} by Task",
+                        ),
+                        f"benchmark_results/{metric_name}_by_preference": wandb.plot.bar(
+                            table,
+                            "preference_vector",
+                            metric_name,
+                            title=f"{metric_name.replace('_', ' ').title()} by Preference Vector",
+                        ),
+                        f"benchmark_results/{metric_name}_table": table,
+                    },
+                    commit=False,
+                )
 
                 successful_logs += 1
 
@@ -399,4 +400,5 @@ def log_benchmark_results_as_bar_charts(
     except Exception as e:
         logger.error(f"Failed to log bar charts to W&B: {e}")
         import traceback
+
         logger.debug(f"Full traceback: {traceback.format_exc()}")

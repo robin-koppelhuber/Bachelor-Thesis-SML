@@ -165,11 +165,15 @@ def apply_task_vector(
                 flat_param = param.flatten()
                 flat_base = state_dict[name].flatten()
                 # Take only the first N elements from task vector
-                state_dict[name] = (flat_base + scaling * flat_param[:flat_base.numel()]).reshape(state_dict[name].shape)
+                state_dict[name] = (flat_base + scaling * flat_param[: flat_base.numel()]).reshape(
+                    state_dict[name].shape
+                )
                 logger.debug(f"  Trimmed {name} from {param.shape} to {state_dict[name].shape}")
             else:
                 # Base model is larger - this shouldn't happen with our padding approach
-                logger.warning(f"  Skipping {name}: base shape {state_dict[name].shape} > task vector shape {param.shape}")
+                logger.warning(
+                    f"  Skipping {name}: base shape {state_dict[name].shape} > task vector shape {param.shape}"
+                )
 
     # Load modified state
     base_model.load_state_dict(state_dict)

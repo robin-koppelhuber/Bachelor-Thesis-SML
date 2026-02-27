@@ -60,7 +60,7 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         self.utopia_point = utopia_point
         self.nadir_point = nadir_point
         self._cached_utopia_point = None  # Cache for computed utopia point
-        self._utopia_cache_key = None     # Cache key to invalidate when tasks change
+        self._utopia_cache_key = None  # Cache key to invalidate when tasks change
 
     def _compute_multi_task_loss(
         self,
@@ -102,7 +102,11 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         return chebyshev_loss
 
     def _get_training_kwargs(
-        self, task_names: list, preference_vector: np.ndarray, dataset_configs: Dict, cache_dir: Optional[str] = None
+        self,
+        task_names: list,
+        preference_vector: np.ndarray,
+        dataset_configs: Dict,
+        cache_dir: Optional[str] = None,
     ) -> Dict:
         """
         Get Chebyshev-specific training parameters
@@ -199,8 +203,7 @@ class ChebyshevFineTuning(BaseTrainingMethod):
 
             if actual_num_labels != expected_num_labels:
                 logger.warning(
-                    f"    ⚠ WARNING: Fine-tuned model has {actual_num_labels} labels, "
-                    f"but config expects {expected_num_labels}. This will cause incorrect utopia point!"
+                    f"    ⚠ WARNING: Fine-tuned model has {actual_num_labels} labels, but config expects {expected_num_labels}. This will cause incorrect utopia point!"
                 )
 
             # Load validation data (small sample for speed)

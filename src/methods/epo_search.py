@@ -134,8 +134,7 @@ class EPOSearch(BaseMergingMethod):
 
         logger.error("EPO search not implemented yet")
         raise NotImplementedError(
-            "EPO search requires training loop implementation. "
-            "This method cannot be used with simple task vector merging."
+            "EPO search requires training loop implementation. This method cannot be used with simple task vector merging."
         )
 
     def solve_epo_qp(

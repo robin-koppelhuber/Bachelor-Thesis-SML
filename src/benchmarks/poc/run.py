@@ -87,16 +87,16 @@ def pad_task_vectors_to_match(
         if current_size < target_size:
             # Pad with zeros to reach target size
             padding_size = target_size - current_size
-            padded_vector = torch.cat([
-                task_vector,
-                torch.zeros(padding_size, dtype=task_vector.dtype, device=task_vector.device)
-            ])
+            padded_vector = torch.cat(
+                [
+                    task_vector,
+                    torch.zeros(padding_size, dtype=task_vector.dtype, device=task_vector.device),
+                ]
+            )
             padded_vectors[task_name] = padded_vector
             logger.debug(f"  Padded {task_name}: {current_size} -> {target_size} (+{padding_size} zeros)")
         elif current_size > target_size:
-            raise ValueError(
-                f"Task vector for {task_name} is larger ({current_size}) than target size ({target_size})"
-            )
+            raise ValueError(f"Task vector for {task_name} is larger ({current_size}) than target size ({target_size})")
         else:
             # Already correct size
             padded_vectors[task_name] = task_vector
@@ -218,9 +218,7 @@ def get_predictions_and_labels(
 
     # Limit samples if specified
     if num_samples:
-        test_dataset_processed = test_dataset_processed.select(
-            range(min(num_samples, len(test_dataset_processed)))
-        )
+        test_dataset_processed = test_dataset_processed.select(range(min(num_samples, len(test_dataset_processed))))
 
     # Create dataloader
     test_dataloader = DataLoader(
@@ -327,7 +325,7 @@ def perform_evaluation(
         predictions=predictions,
         labels=labels,
         task_name=task_name,
-        metrics=cfg.benchmark.evaluation.metrics,
+        metrics=[m.name for m in cfg.benchmark.evaluation.metrics],
     )
 
     return result
@@ -354,15 +352,16 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     validate_training_config(cfg)
 
     # Initialize Joblib cache for evaluation results
-    cache_enabled = cfg.benchmark.get('cache_enabled', True)
+    cache_enabled = cfg.benchmark.get("cache_enabled", True)
     if cache_enabled:
         eval_cache_dir = Path(cfg.paths.evaluation_cache)
         setup_cache(eval_cache_dir, verbose=0)
         logger.info(f"Evaluation cache enabled: {eval_cache_dir}")
 
         # Clear cache if requested
-        if cfg.benchmark.get('clear_cache', False):
+        if cfg.benchmark.get("clear_cache", False):
             from src.utils.cache import clear_cache
+
             clear_cache()
             logger.info("Cleared evaluation cache")
     else:
@@ -372,6 +371,10 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     logger.info(f"Tasks: {cfg.benchmark.tasks}")
     logger.info(f"Method: {cfg.method.name}")
     logger.info(f"Device: {device}")
+
+    # Extract metric names from the structured metrics config
+    metric_names = [m.name for m in cfg.benchmark.evaluation.metrics]
+    logger.info(f"Metrics: {metric_names}")
 
     # Step 0: Compute reference points from fine-tuned models
     logger.info("\n" + "=" * 80)
@@ -384,7 +387,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     reference_points = compute_reference_points(
         cfg=cfg,
         task_names=cfg.benchmark.tasks,
-        metrics=cfg.benchmark.evaluation.metrics,
+        metrics=metric_names,
         device=device,
         cache_dir=reference_cache_dir,
     )
@@ -406,9 +409,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         return load_model(
             model_id=cfg.model.hf_model_id,
             num_labels=num_labels,
-            cache_dir=Path(cfg.paths.hf_models_cache_base)
-            if cfg.paths.hf_models_cache_base
-            else None,
+            cache_dir=Path(cfg.paths.hf_models_cache_base) if cfg.paths.hf_models_cache_base else None,
             device=device,
             torch_dtype=cfg.model.loading.torch_dtype,
         )
@@ -461,9 +462,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             finetuned_model = load_model(
                 model_id=dataset_cfg.finetuned_checkpoint,
                 num_labels=None,  # Don't pass num_labels for fine-tuned models
-                cache_dir=Path(cfg.paths.hf_models_cache_finetuned)
-                if cfg.paths.hf_models_cache_finetuned
-                else None,
+                cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
                 device=device,
                 torch_dtype=cfg.model.loading.torch_dtype,
             )
@@ -541,36 +540,39 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             # Use INCLUSION (whitelist) approach: only include behavior-critical parameters
             training_critical_params = {
                 # Core training hyperparameters (affect optimization)
-                'learning_rate',                # Optimizer learning rate
-                'batch_size',                   # Batch size per GPU
-                'weight_decay',                 # L2 regularization strength
-                'gradient_accumulation_steps',  # Effective batch size = batch_size * this
-                'max_grad_norm',                # Gradient clipping threshold
+                "learning_rate",  # Optimizer learning rate
+                "batch_size",  # Batch size per GPU
+                "weight_decay",  # L2 regularization strength
+                "gradient_accumulation_steps",  # Effective batch size = batch_size * this
+                "max_grad_norm",  # Gradient clipping threshold
                 # Method-specific algorithm parameters
-                'use_augmented',                # Chebyshev: augmented scalarization
-                'epsilon',                      # Chebyshev: augmentation coefficient
-                'normalize_preferences',        # Normalize preference weights
-                'utopia_point',                 # Chebyshev: manual utopia point
-                'nadir_point',                  # Chebyshev: manual nadir point
+                "use_augmented",  # Chebyshev: augmented scalarization
+                "epsilon",  # Chebyshev: augmentation coefficient
+                "normalize_preferences",  # Normalize preference weights
+                "utopia_point",  # Chebyshev: manual utopia point
+                "nadir_point",  # Chebyshev: manual nadir point
                 # Data-affecting parameters (change what data is seen)
-                'use_fp16',                     # Mixed precision (numerical precision)
-                'max_samples_per_task',         # Data subsetting (limits training data)
+                "use_fp16",  # Mixed precision (numerical precision)
+                "max_samples_per_task",  # Data subsetting (limits training data)
                 # TIES merging parameters
-                'k',                            # Top-k fraction to keep
-                'lambda_merge',                 # Merge scaling coefficient
-                'scaling_method',               # Parameter scaling strategy
-                'use_preferences',              # Use preference weighting
-                'sign_consensus_method',        # Sign resolution strategy
+                "k",  # Top-k fraction to keep
+                "lambda_merge",  # Merge scaling coefficient
+                "scaling_method",  # Parameter scaling strategy
+                "use_preferences",  # Use preference weighting
+                "sign_consensus_method",  # Sign resolution strategy
             }
             # Only include parameters that exist in config and are in the critical set
             training_params = {k: v for k, v in params.items() if k in training_critical_params}
 
-            config_str = json.dumps({
-                "method": cfg.method.name,
-                "preference": preference_array.tolist(),
-                "params": training_params,  # Only training-related params
-                "tasks": sorted(OmegaConf.to_container(cfg.benchmark.tasks, resolve=True)),
-            }, sort_keys=True)
+            config_str = json.dumps(
+                {
+                    "method": cfg.method.name,
+                    "preference": preference_array.tolist(),
+                    "params": training_params,  # Only training-related params
+                    "tasks": sorted(OmegaConf.to_container(cfg.benchmark.tasks, resolve=True)),
+                },
+                sort_keys=True,
+            )
             config_hash = hashlib.md5(config_str.encode()).hexdigest()[:12]
 
             # Construct cache path for trained model
@@ -580,8 +582,8 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             model_cache_path = cache_dir / model_filename
 
             # Determine execution mode
-            mode = cfg.benchmark.get('mode', 'train_eval')
-            force_retrain = cfg.benchmark.get('force_retrain', False)
+            mode = cfg.benchmark.get("mode", "train_eval")
+            force_retrain = cfg.benchmark.get("force_retrain", False)
             model_exists = model_cache_path.exists()
 
             # Mode logic:
@@ -591,14 +593,13 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             should_train = False
             should_load_cache = False
 
-            if mode == 'eval_only':
+            if mode == "eval_only":
                 if not model_exists:
                     raise FileNotFoundError(
-                        f"eval_only mode requires cached model: {model_cache_path}\n"
-                        f"Train first with mode=train_eval or mode=train_only"
+                        f"eval_only mode requires cached model: {model_cache_path}\nTrain first with mode=train_eval or mode=train_only"
                     )
                 should_load_cache = True
-            elif mode == 'train_only':
+            elif mode == "train_only":
                 if model_exists and not force_retrain:
                     logger.info(f"Skipping training (cached model exists): {model_cache_path}")
                     should_load_cache = True
@@ -628,8 +629,12 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     base_model=cfg.model.hf_model_id,
                     dataset_configs=dataset_configs,
                     preference_vector=preference_array,
-                    model_cache_dir=str(Path(cfg.paths.hf_models_cache_base)) if cfg.paths.hf_models_cache_base else None,
-                    finetuned_model_cache_dir=str(Path(cfg.paths.hf_models_cache_finetuned)) if cfg.paths.hf_models_cache_finetuned else None,
+                    model_cache_dir=str(Path(cfg.paths.hf_models_cache_base))
+                    if cfg.paths.hf_models_cache_base
+                    else None,
+                    finetuned_model_cache_dir=str(Path(cfg.paths.hf_models_cache_finetuned))
+                    if cfg.paths.hf_models_cache_finetuned
+                    else None,
                     dataset_cache_dir=str(Path(cfg.paths.hf_datasets_cache)) if cfg.paths.hf_datasets_cache else None,
                     save_path=save_path,
                     epoch_checkpoint_dir=str(Path(cfg.paths.checkpoints_dir)),
@@ -637,14 +642,13 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 )
             else:
                 # Should not reach here, but handle gracefully
-                raise RuntimeError(f"Invalid execution state: mode={mode}, should_train={should_train}, should_load_cache={should_load_cache}")
+                raise RuntimeError(
+                    f"Invalid execution state: mode={mode}, should_train={should_train}, should_load_cache={should_load_cache}"
+                )
         else:
             # Parameter merging method: merge pre-computed task vectors
             logger.info("Merging task vectors...")
-            merged_flat = method.merge(
-                task_vectors=task_vectors_dict,
-                preference_vector=preference_array
-            )
+            merged_flat = method.merge(task_vectors=task_vectors_dict, preference_vector=preference_array)
 
         # Unflatten merged vector (create template if not already available)
         if task_vector_template is None:
@@ -706,6 +710,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
                 # Create deterministic hash of task vector for cache key
                 import hashlib
+
                 task_vec_bytes = str(sorted(merged_task_vector.items())).encode()
                 task_vec_hash = hashlib.md5(task_vec_bytes).hexdigest()[:12]
 
@@ -725,7 +730,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     predictions=predictions,
                     labels=labels,
                     task_name=task_name,
-                    metrics=cfg.benchmark.evaluation.metrics,
+                    metrics=metric_names,
                 )
 
                 logger.info(f"  ✓ {result}")
@@ -773,15 +778,14 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         logger.info(f"Saving visualizations to: {output_dir}")
 
         # Generate all visualizations
-        primary_metric = cfg.benchmark.evaluation.metrics[0] if cfg.benchmark.evaluation.metrics else "f1_macro"
         figures = generate_all_visualizations(
             all_results=all_results,
             task_names=cfg.benchmark.tasks,
-            metric_name=primary_metric,
+            metrics_config=list(cfg.benchmark.evaluation.metrics),
             output_dir=output_dir,
             method_name=cfg.method.name,
             reference_points=reference_points,
-            additional_metrics=list(cfg.benchmark.evaluation.metrics),
+            cross_metric_plots_config=list(cfg.benchmark.evaluation.get("cross_metric_plots", [])),
         )
 
         logger.info(f"✓ Generated {len(figures)} visualizations")
@@ -797,7 +801,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             export_results_table(
                 all_results=all_results,
                 task_names=cfg.benchmark.tasks,
-                metrics=cfg.benchmark.evaluation.metrics,
+                metrics=metric_names,
                 output_dir=output_dir,
                 method_name=cfg.method.name,
                 reference_points=reference_points,
@@ -807,12 +811,14 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
         except Exception as e:
             import traceback
+
             logger.error(f"Failed to export results table: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             logger.warning("Continuing without results export.")
 
     except Exception as e:
         import traceback
+
         logger.error(f"Failed to generate visualizations: {e}")
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         logger.warning("Continuing without visualizations. Check the error above for details.")
@@ -820,6 +826,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     # Step 6: Log results to W&B as bar charts
     try:
         import wandb
+
         if wandb.run:
             logger.info("\n" + "=" * 80)
             logger.info("Logging results to W&B as bar charts")
@@ -830,7 +837,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             log_benchmark_results_as_bar_charts(
                 all_results=all_results,
                 task_names=cfg.benchmark.tasks,
-                metrics=cfg.benchmark.evaluation.metrics,
+                metrics=metric_names,
             )
         else:
             logger.info("W&B run not active, skipping bar chart logging")
@@ -855,4 +862,3 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     }
 
     return results
-

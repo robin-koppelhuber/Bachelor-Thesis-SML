@@ -67,6 +67,7 @@ class ClassificationEvaluator:
         if use_torch_compile:
             try:
                 import platform
+
                 if platform.system() != "Windows":
                     # Linux/Mac: use configured compilation mode
                     self.model = torch.compile(self.model, mode=torch_compile_mode)

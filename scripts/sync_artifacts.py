@@ -39,7 +39,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -291,7 +291,7 @@ def _sync_upload(
         # Check if artifact exists with same content
         if artifact_name in wandb_artifacts:
             existing_artifact = wandb_artifacts[artifact_name]
-            existing_hash = existing_artifact.metadata.get('file_hash', None)
+            existing_hash = existing_artifact.metadata.get("file_hash", None)
 
             if existing_hash == file_hash:
                 logger.info(f"  ⊘ Skip {artifact_name} (unchanged)")
@@ -324,7 +324,7 @@ def _sync_upload(
                 name=artifact_name,
                 type=artifact_type,
                 description=f"Auto-synced from {local_path}",
-                metadata={'file_hash': file_hash},
+                metadata={"file_hash": file_hash},
             )
 
             # Add file
@@ -375,7 +375,7 @@ def _sync_download(
         if artifact_name in local_files:
             local_file = local_files[artifact_name]
             local_hash = get_file_hash(local_file)
-            wandb_hash = artifact.metadata.get('file_hash', None)
+            wandb_hash = artifact.metadata.get("file_hash", None)
 
             if wandb_hash and local_hash == wandb_hash:
                 logger.info(f"  ⊘ Skip {artifact_name} (unchanged)")
@@ -408,7 +408,7 @@ def main():
     upload_parser.add_argument("--type", type=str, default="model", help="Artifact type")
     upload_parser.add_argument("--project", type=str, default="bachelor_thesis_sml", help="W&B project")
     upload_parser.add_argument("--entity", type=str, help="W&B entity")
-    upload_parser.add_argument("--metadata", type=str, help='Metadata as JSON')
+    upload_parser.add_argument("--metadata", type=str, help="Metadata as JSON")
     upload_parser.add_argument("--description", type=str, help="Artifact description")
 
     # Download command
@@ -429,8 +429,13 @@ def main():
     sync_parser.add_argument("--path", type=Path, required=True, help="Local directory to sync")
     sync_parser.add_argument("--type", type=str, default="model", help="Artifact type")
     sync_parser.add_argument("--pattern", type=str, default="*.safetensors", help="File pattern")
-    sync_parser.add_argument("--direction", type=str, default="upload", choices=["upload", "download", "both"],
-                             help="Sync direction (upload, download, both)")
+    sync_parser.add_argument(
+        "--direction",
+        type=str,
+        default="upload",
+        choices=["upload", "download", "both"],
+        help="Sync direction (upload, download, both)",
+    )
     sync_parser.add_argument("--project", type=str, default="bachelor_thesis_sml", help="W&B project")
     sync_parser.add_argument("--entity", type=str, help="W&B entity")
 

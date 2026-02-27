@@ -19,6 +19,7 @@ wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+/tests/test_visualization/test_output
 
 # MyPy
 .mypy_cache/

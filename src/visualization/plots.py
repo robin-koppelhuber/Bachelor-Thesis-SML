@@ -1,7 +1,7 @@
 """Core plotting utilities"""
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -31,8 +31,8 @@ def format_task_name(name: str) -> str:
     Returns:
         Formatted task name
     """
-    parts = name.replace('_', ' ').split()
-    return ' '.join([part.upper() if len(part) <= 4 else part.title() for part in parts])
+    parts = name.replace("_", " ").split()
+    return " ".join([part.upper() if len(part) <= 4 else part.title() for part in parts])
 
 
 def format_metric_name(name: str) -> str:
@@ -49,7 +49,7 @@ def format_metric_name(name: str) -> str:
     Returns:
         Formatted metric name
     """
-    return name.replace('_', ' ').title()
+    return name.replace("_", " ").title()
 
 
 def save_plot(
@@ -340,8 +340,8 @@ def plot_performance_heatmap(
         ax=ax,
     )
 
-    ax.set_xlabel("Task", fontsize=12, fontweight='bold')
-    ax.set_ylabel("Preference Vector", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Task", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Preference Vector", fontsize=12, fontweight="bold")
 
     if title:
         ax.set_title(title, fontsize=14, fontweight="bold")
@@ -450,8 +450,8 @@ def plot_task_interference_matrix(
         ax=ax,
     )
 
-    ax.set_xlabel("Task", fontsize=12, fontweight='bold')
-    ax.set_ylabel("Task", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Task", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Task", fontsize=12, fontweight="bold")
 
     if title:
         ax.set_title(title, fontsize=14, fontweight="bold")
@@ -497,8 +497,8 @@ def plot_preference_alignment(
     # Bar chart comparison
     ax1.bar(x - width / 2, requested, width, label="Requested Preference", alpha=0.8, color="steelblue")
     ax1.bar(x + width / 2, achieved, width, label="Achieved (÷ sum)", alpha=0.8, color="coral")
-    ax1.set_xlabel("Task", fontsize=12, fontweight='bold')
-    ax1.set_ylabel("Relative Weight", fontsize=12, fontweight='bold')
+    ax1.set_xlabel("Task", fontsize=12, fontweight="bold")
+    ax1.set_ylabel("Relative Weight", fontsize=12, fontweight="bold")
     ax1.set_title("Preference vs. Achieved Performance", fontsize=12, fontweight="bold")
     ax1.set_xticks(x)
     ax1.set_xticklabels(formatted_task_names, rotation=45, ha="right")
@@ -506,9 +506,15 @@ def plot_preference_alignment(
     ax1.grid(axis="y", alpha=0.3)
 
     # Add explanation text
-    ax1.text(0.02, 0.98, "Achieved normalized by sum of all task scores",
-             transform=ax1.transAxes, fontsize=8, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.6))
+    ax1.text(
+        0.02,
+        0.98,
+        "Achieved normalized by sum of all task scores",
+        transform=ax1.transAxes,
+        fontsize=8,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.6),
+    )
 
     # Scatter plot with diagonal
     ax2.scatter(requested, achieved, s=100, alpha=0.7, color="steelblue")
@@ -519,8 +525,8 @@ def plot_preference_alignment(
     max_val = max(requested.max(), achieved.max())
     ax2.plot([0, max_val], [0, max_val], "k--", alpha=0.5, label="Perfect Alignment")
 
-    ax2.set_xlabel("Requested Preference Weight", fontsize=12, fontweight='bold')
-    ax2.set_ylabel("Achieved Score (÷ sum)", fontsize=12, fontweight='bold')
+    ax2.set_xlabel("Requested Preference Weight", fontsize=12, fontweight="bold")
+    ax2.set_ylabel("Achieved Score (÷ sum)", fontsize=12, fontweight="bold")
     ax2.set_title("Preference Alignment Scatter", fontsize=12, fontweight="bold")
     ax2.legend(fontsize=9)
     ax2.grid(alpha=0.3)
@@ -594,45 +600,74 @@ def plot_parallel_coordinates(
         pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
 
         # Plot line
-        ax.plot(x_positions, scores, 'o-', linewidth=2, markersize=8,
-                alpha=0.6, color=color, label=pref_label)
+        ax.plot(
+            x_positions,
+            scores,
+            "o-",
+            linewidth=2,
+            markersize=8,
+            alpha=0.6,
+            color=color,
+            label=pref_label,
+        )
 
     # Plot reference points (single-task fine-tuned models) if provided
     if reference_points:
         for task_name in task_names:
             if task_name in reference_points:
-                ref_scores = [reference_points[task_name].get(f"{t}_{metric_name}", 0)
-                             for t in task_names]
-                ax.plot(x_positions, ref_scores, 's--', linewidth=2, markersize=10,
-                        alpha=0.8, color='gold', markeredgecolor='black', markeredgewidth=1.5)
+                ref_scores = [reference_points[task_name].get(f"{t}_{metric_name}", 0) for t in task_names]
+                ax.plot(
+                    x_positions,
+                    ref_scores,
+                    "s--",
+                    linewidth=2,
+                    markersize=10,
+                    alpha=0.8,
+                    color="gold",
+                    markeredgecolor="black",
+                    markeredgewidth=1.5,
+                )
 
     # Styling
     ax.set_xticks(x_positions)
-    ax.set_xticklabels(formatted_task_names, fontsize=12, fontweight='bold')
-    ax.set_ylabel(formatted_metric, fontsize=13, fontweight='bold')
-    ax.set_xlabel("Task", fontsize=13, fontweight='bold')
-    ax.set_title(f"Parallel Coordinates: Multi-Task Performance Comparison\n{formatted_metric}",
-                 fontsize=14, fontweight='bold')
+    ax.set_xticklabels(formatted_task_names, fontsize=12, fontweight="bold")
+    ax.set_ylabel(formatted_metric, fontsize=13, fontweight="bold")
+    ax.set_xlabel("Task", fontsize=13, fontweight="bold")
+    ax.set_title(
+        f"Parallel Coordinates: Multi-Task Performance Comparison\n{formatted_metric}",
+        fontsize=14,
+        fontweight="bold",
+    )
     ax.set_ylim(0, 1.0)
-    ax.grid(axis='y', alpha=0.3, linestyle='--')
-    ax.grid(axis='x', alpha=0.2)
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.grid(axis="x", alpha=0.2)
 
     # Create custom legend
     from matplotlib.patches import Patch
+
     legend_elements = [
-        Patch(facecolor='#2ca02c', alpha=0.6, label='Equal Preference'),
-        Patch(facecolor='#d62728', alpha=0.6, label='Extreme Preference (≥0.7)'),
-        Patch(facecolor='#1f77b4', alpha=0.6, label='Balanced Preference'),
+        Patch(facecolor="#2ca02c", alpha=0.6, label="Equal Preference"),
+        Patch(facecolor="#d62728", alpha=0.6, label="Extreme Preference (≥0.7)"),
+        Patch(facecolor="#1f77b4", alpha=0.6, label="Balanced Preference"),
     ]
     if reference_points:
         from matplotlib.lines import Line2D
+
         legend_elements.append(
-            Line2D([0], [0], marker='s', color='gold', markeredgecolor='black',
-                   markeredgewidth=1.5, markersize=10, linestyle='--',
-                   label='Fine-tuned Single-Task')
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="gold",
+                markeredgecolor="black",
+                markeredgewidth=1.5,
+                markersize=10,
+                linestyle="--",
+                label="Fine-tuned Single-Task",
+            )
         )
 
-    ax.legend(handles=legend_elements, loc='lower right', fontsize=10, framealpha=0.9)
+    ax.legend(handles=legend_elements, loc="lower right", fontsize=10, framealpha=0.9)
 
     plt.tight_layout()
 
@@ -682,10 +717,9 @@ def plot_distance_to_utopia(
         utopia_point = np.array(utopia_scores)
     else:
         # Use current results to compute utopia
-        utopia_point = np.array([
-            max(result["task_results"][task].metrics[metric_name] for result in all_results)
-            for task in task_names
-        ])
+        utopia_point = np.array(
+            [max(result["task_results"][task].metrics[metric_name] for result in all_results) for task in task_names]
+        )
 
     # Calculate distances and extract info
     distances = []
@@ -728,36 +762,52 @@ def plot_distance_to_utopia(
 
     # Create bar chart
     y_positions = np.arange(len(distances))
-    bars = ax.barh(y_positions, distances, color=colors, alpha=0.7, edgecolor='black', linewidth=1)
+    bars = ax.barh(y_positions, distances, color=colors, alpha=0.7, edgecolor="black", linewidth=1)
 
     # Add value labels on bars
     for i, (bar, dist) in enumerate(zip(bars, distances)):
-        ax.text(dist + 0.005, bar.get_y() + bar.get_height()/2,
-                f'{dist:.4f}', va='center', fontsize=9, fontweight='bold')
+        ax.text(
+            dist + 0.005,
+            bar.get_y() + bar.get_height() / 2,
+            f"{dist:.4f}",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
 
     # Styling
     ax.set_yticks(y_positions)
     ax.set_yticklabels(pref_labels, fontsize=10)
-    ax.set_xlabel(f"Euclidean Distance to Utopia Point", fontsize=12, fontweight='bold')
-    ax.set_ylabel("Preference Vector", fontsize=12, fontweight='bold')
-    ax.set_title(f"Distance to Utopia Point Analysis\n{formatted_metric} (Lower is Better)",
-                 fontsize=14, fontweight='bold')
-    ax.grid(axis='x', alpha=0.3, linestyle='--')
+    ax.set_xlabel("Euclidean Distance to Utopia Point", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Preference Vector", fontsize=12, fontweight="bold")
+    ax.set_title(
+        f"Distance to Utopia Point Analysis\n{formatted_metric} (Lower is Better)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    ax.grid(axis="x", alpha=0.3, linestyle="--")
 
     # Add legend
     from matplotlib.patches import Patch
+
     legend_elements = [
-        Patch(facecolor='#2ca02c', alpha=0.7, edgecolor='black', label='Equal Preference'),
-        Patch(facecolor='#d62728', alpha=0.7, edgecolor='black', label='Extreme Preference (≥0.7)'),
-        Patch(facecolor='#1f77b4', alpha=0.7, edgecolor='black', label='Balanced Preference'),
+        Patch(facecolor="#2ca02c", alpha=0.7, edgecolor="black", label="Equal Preference"),
+        Patch(facecolor="#d62728", alpha=0.7, edgecolor="black", label="Extreme Preference (≥0.7)"),
+        Patch(facecolor="#1f77b4", alpha=0.7, edgecolor="black", label="Balanced Preference"),
     ]
-    ax.legend(handles=legend_elements, loc='lower right', fontsize=10, framealpha=0.9)
+    ax.legend(handles=legend_elements, loc="lower right", fontsize=10, framealpha=0.9)
 
     # Add annotation about utopia point
     utopia_str = f"Utopia: [{', '.join([f'{x:.3f}' for x in utopia_point])}]"
-    ax.text(0.02, 0.98, utopia_str, transform=ax.transAxes,
-            fontsize=9, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    ax.text(
+        0.02,
+        0.98,
+        utopia_str,
+        transform=ax.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+    )
 
     plt.tight_layout()
 
@@ -859,37 +909,61 @@ def plot_performance_recovery(
 
         # Plot 1: Absolute values (expected vs achieved)
         width = bar_spacing * 0.8  # Scale width with spacing
-        ax1.bar(x_positions - width/2, expected_vals, width,
-                alpha=0.6, color=color, edgecolor='black', linewidth=0.5)
-        ax1.bar(x_positions + width/2, achieved_vals, width,
-                alpha=0.9, color=color, edgecolor='black', linewidth=1,
-                label=pref_label if pref_idx < 7 else None)  # Limit legend entries
+        ax1.bar(
+            x_positions - width / 2,
+            expected_vals,
+            width,
+            alpha=0.6,
+            color=color,
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        ax1.bar(
+            x_positions + width / 2,
+            achieved_vals,
+            width,
+            alpha=0.9,
+            color=color,
+            edgecolor="black",
+            linewidth=1,
+            label=pref_label if pref_idx < 7 else None,
+        )  # Limit legend entries
 
         # Plot 2: Recovery percentage
-        bars = ax2.bar(x_positions, recovery_rates, width * 1.6,
-                      alpha=0.8, color=color, edgecolor='black', linewidth=1,
-                      label=pref_label if pref_idx < 7 else None)
+        bars = ax2.bar(
+            x_positions,
+            recovery_rates,
+            width * 1.6,
+            alpha=0.8,
+            color=color,
+            edgecolor="black",
+            linewidth=1,
+            label=pref_label if pref_idx < 7 else None,
+        )
 
         # Color bars in plot 2 based on performance
         for bar, rate in zip(bars, recovery_rates):
             if rate >= 100:
-                bar.set_facecolor('#2ecc71')  # Green for exceeding expectation
+                bar.set_facecolor("#2ecc71")  # Green for exceeding expectation
                 bar.set_alpha(0.8)
             elif rate >= 80:
-                bar.set_facecolor('#f39c12')  # Orange for close
+                bar.set_facecolor("#f39c12")  # Orange for close
                 bar.set_alpha(0.7)
             else:
-                bar.set_facecolor('#e74c3c')  # Red for underperforming
+                bar.set_facecolor("#e74c3c")  # Red for underperforming
                 bar.set_alpha(0.7)
 
     # Styling for Plot 1 (Absolute Values)
     ax1.set_xticks(np.arange(num_tasks) + (num_prefs - 1) * bar_spacing / 2)
-    ax1.set_xticklabels(formatted_task_names, fontsize=11, fontweight='bold', rotation=0)
-    ax1.set_ylabel(f'{formatted_metric} (Absolute)', fontsize=12, fontweight='bold')
-    ax1.set_xlabel('Task', fontsize=12, fontweight='bold')
-    ax1.set_title(f'Performance Recovery: Expected vs. Achieved\n{formatted_metric}',
-                  fontsize=13, fontweight='bold')
-    ax1.grid(axis='y', alpha=0.3, linestyle='--')
+    ax1.set_xticklabels(formatted_task_names, fontsize=11, fontweight="bold", rotation=0)
+    ax1.set_ylabel(f"{formatted_metric} (Absolute)", fontsize=12, fontweight="bold")
+    ax1.set_xlabel("Task", fontsize=12, fontweight="bold")
+    ax1.set_title(
+        f"Performance Recovery: Expected vs. Achieved\n{formatted_metric}",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax1.grid(axis="y", alpha=0.3, linestyle="--")
     ax1.set_ylim(0, 1.0)
 
     # Set x-axis limits to show all bars clearly
@@ -897,46 +971,66 @@ def plot_performance_recovery(
 
     # Add legend with custom patches
     from matplotlib.patches import Patch
+
     legend_elements1 = [
-        Patch(facecolor='gray', alpha=0.6, edgecolor='black', label='Expected (weight × single-task)'),
-        Patch(facecolor='gray', alpha=0.9, edgecolor='black', linewidth=2, label='Achieved (multi-task)'),
+        Patch(facecolor="gray", alpha=0.6, edgecolor="black", label="Expected (weight × single-task)"),
+        Patch(
+            facecolor="gray",
+            alpha=0.9,
+            edgecolor="black",
+            linewidth=2,
+            label="Achieved (multi-task)",
+        ),
     ]
-    ax1.legend(handles=legend_elements1, loc='upper right', fontsize=9, framealpha=0.9)
+    ax1.legend(handles=legend_elements1, loc="upper right", fontsize=9, framealpha=0.9)
 
     # Add explanation text
-    ax1.text(0.02, 0.98,
-             'Expected = preference_weight × single_task_performance',
-             transform=ax1.transAxes, fontsize=8, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.6))
+    ax1.text(
+        0.02,
+        0.98,
+        "Expected = preference_weight × single_task_performance",
+        transform=ax1.transAxes,
+        fontsize=8,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.6),
+    )
 
     # Styling for Plot 2 (Recovery Percentage)
-    ax2.axhline(y=100, color='black', linestyle='--', linewidth=1.5, alpha=0.7, label='100% Recovery')
-    ax2.axhline(y=80, color='gray', linestyle=':', linewidth=1, alpha=0.5)
+    ax2.axhline(y=100, color="black", linestyle="--", linewidth=1.5, alpha=0.7, label="100% Recovery")
+    ax2.axhline(y=80, color="gray", linestyle=":", linewidth=1, alpha=0.5)
 
     ax2.set_xticks(np.arange(num_tasks) + (num_prefs - 1) * bar_spacing / 2)
-    ax2.set_xticklabels(formatted_task_names, fontsize=11, fontweight='bold', rotation=0)
-    ax2.set_ylabel('Recovery Rate (%)', fontsize=12, fontweight='bold')
-    ax2.set_xlabel('Task', fontsize=12, fontweight='bold')
-    ax2.set_title(f'Performance Recovery Rate\n{formatted_metric} (Higher is Better)',
-                  fontsize=13, fontweight='bold')
-    ax2.grid(axis='y', alpha=0.3, linestyle='--')
+    ax2.set_xticklabels(formatted_task_names, fontsize=11, fontweight="bold", rotation=0)
+    ax2.set_ylabel("Recovery Rate (%)", fontsize=12, fontweight="bold")
+    ax2.set_xlabel("Task", fontsize=12, fontweight="bold")
+    ax2.set_title(
+        f"Performance Recovery Rate\n{formatted_metric} (Higher is Better)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax2.grid(axis="y", alpha=0.3, linestyle="--")
 
     # Set x-axis limits to show all bars clearly
     ax2.set_xlim(-0.2, num_tasks - 1 + (num_prefs - 1) * bar_spacing + 0.2)
 
     # Add legend for recovery rates
     legend_elements2 = [
-        Patch(facecolor='#2ecc71', alpha=0.8, edgecolor='black', label='≥100%: Exceeds expectation'),
-        Patch(facecolor='#f39c12', alpha=0.7, edgecolor='black', label='80-100%: Close to expectation'),
-        Patch(facecolor='#e74c3c', alpha=0.7, edgecolor='black', label='<80%: Underperforming'),
+        Patch(facecolor="#2ecc71", alpha=0.8, edgecolor="black", label="≥100%: Exceeds expectation"),
+        Patch(facecolor="#f39c12", alpha=0.7, edgecolor="black", label="80-100%: Close to expectation"),
+        Patch(facecolor="#e74c3c", alpha=0.7, edgecolor="black", label="<80%: Underperforming"),
     ]
-    ax2.legend(handles=legend_elements2, loc='upper right', fontsize=9, framealpha=0.9)
+    ax2.legend(handles=legend_elements2, loc="upper right", fontsize=9, framealpha=0.9)
 
     # Add explanation text
-    ax2.text(0.02, 0.02,
-             'Recovery % = (achieved / expected) × 100',
-             transform=ax2.transAxes, fontsize=8, verticalalignment='bottom',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.6))
+    ax2.text(
+        0.02,
+        0.02,
+        "Recovery % = (achieved / expected) × 100",
+        transform=ax2.transAxes,
+        fontsize=8,
+        verticalalignment="bottom",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.6),
+    )
 
     plt.tight_layout()
 

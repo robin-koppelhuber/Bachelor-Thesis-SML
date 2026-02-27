@@ -49,8 +49,6 @@ def get_device_info() -> dict:
     }
 
     if info["cuda_available"]:
-        info["cuda_devices"] = [
-            torch.cuda.get_device_name(i) for i in range(info["cuda_device_count"])
-        ]
+        info["cuda_devices"] = [torch.cuda.get_device_name(i) for i in range(info["cuda_device_count"])]
 
     return info

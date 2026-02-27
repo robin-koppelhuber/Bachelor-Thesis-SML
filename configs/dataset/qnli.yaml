@@ -1,4 +1,4 @@
-# @package _global_.datasets.mnli
+# @package _global_.datasets.qnli
 name: qnli
 display_name: "QNLI"
 task_type: classification
@@ -25,9 +25,3 @@ preprocessing:
   truncation: true
   padding: max_length
 
-# Evaluation
-evaluation:
-  batch_size: 32
-  metrics:
-    - accuracy
-    - f1_macro

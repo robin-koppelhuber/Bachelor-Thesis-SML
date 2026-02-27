@@ -64,6 +64,7 @@ def load_saved_model_state(
     # Try loading with safetensors first
     try:
         from safetensors.torch import load_file
+
         state_dict = load_file(str(model_path), device=str(device))
         logger.info("  ✓ Loaded model (safetensors format)")
         return state_dict
@@ -107,9 +108,7 @@ def evaluate_saved_model(
         return load_model(
             model_id=cfg.model.hf_model_id,
             num_labels=num_labels,
-            cache_dir=Path(cfg.paths.hf_models_cache_base)
-            if cfg.paths.hf_models_cache_base
-            else None,
+            cache_dir=Path(cfg.paths.hf_models_cache_base) if cfg.paths.hf_models_cache_base else None,
             device=device,
             torch_dtype=cfg.model.loading.torch_dtype,
         )
@@ -169,9 +168,7 @@ def evaluate_saved_model(
             dataset_path=dataset_cfg.hf_dataset.path,
             subset=dataset_cfg.hf_dataset.get("subset", None),
             split=dataset_cfg.hf_dataset.split.test,
-            cache_dir=Path(cfg.paths.hf_datasets_cache)
-            if cfg.paths.hf_datasets_cache
-            else None,
+            cache_dir=Path(cfg.paths.hf_datasets_cache) if cfg.paths.hf_datasets_cache else None,
         )
 
         test_dataset_processed = preprocess_dataset(
@@ -212,7 +209,7 @@ def evaluate_saved_model(
         result = evaluator.evaluate(
             dataloader=test_dataloader,
             task_name=task_name,
-            metrics=cfg.benchmark.evaluation.metrics,
+            metrics=[m.name for m in cfg.benchmark.evaluation.metrics],
         )
 
         task_results[task_name] = result
@@ -238,7 +235,7 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Using device: {device}")
 
     # Check if specific model path provided
-    if hasattr(cfg, 'model_path') and cfg.model_path:
+    if hasattr(cfg, "model_path") and cfg.model_path:
         model_path = Path(cfg.model_path)
         if not model_path.exists():
             logger.error(f"Model not found: {model_path}")
@@ -258,7 +255,7 @@ def main(cfg: DictConfig) -> None:
 
     else:
         # Evaluate all models in cache directory
-        cache_dir = Path(cfg.benchmark.training.cache_dir) if hasattr(cfg.benchmark, 'training') else None
+        cache_dir = Path(cfg.benchmark.training.cache_dir) if hasattr(cfg.benchmark, "training") else None
 
         if not cache_dir or not cache_dir.exists():
             logger.error(f"Cache directory not found or not configured: {cache_dir}")
@@ -266,7 +263,9 @@ def main(cfg: DictConfig) -> None:
             return
 
         # Find all saved models
-        model_files = list(cache_dir.glob("*.safetensors")) + list(cache_dir.glob("*.pt")) + list(cache_dir.glob("*.pth"))
+        model_files = (
+            list(cache_dir.glob("*.safetensors")) + list(cache_dir.glob("*.pt")) + list(cache_dir.glob("*.pth"))
+        )
 
         if not model_files:
             logger.error(f"No saved models found in: {cache_dir}")

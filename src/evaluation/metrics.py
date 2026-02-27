@@ -37,29 +37,19 @@ def compute_classification_metrics(
             results["accuracy"] = float(accuracy_score(labels, predictions))
 
         elif metric == "f1_macro":
-            results["f1_macro"] = float(
-                f1_score(labels, predictions, average="macro", zero_division=0)
-            )
+            results["f1_macro"] = float(f1_score(labels, predictions, average="macro", zero_division=0))
 
         elif metric == "f1_weighted":
-            results["f1_weighted"] = float(
-                f1_score(labels, predictions, average="weighted", zero_division=0)
-            )
+            results["f1_weighted"] = float(f1_score(labels, predictions, average="weighted", zero_division=0))
 
         elif metric == "f1_micro":
-            results["f1_micro"] = float(
-                f1_score(labels, predictions, average="micro", zero_division=0)
-            )
+            results["f1_micro"] = float(f1_score(labels, predictions, average="micro", zero_division=0))
 
         elif metric == "precision_macro":
-            results["precision_macro"] = float(
-                precision_score(labels, predictions, average="macro", zero_division=0)
-            )
+            results["precision_macro"] = float(precision_score(labels, predictions, average="macro", zero_division=0))
 
         elif metric == "recall_macro":
-            results["recall_macro"] = float(
-                recall_score(labels, predictions, average="macro", zero_division=0)
-            )
+            results["recall_macro"] = float(recall_score(labels, predictions, average="macro", zero_division=0))
 
         elif metric == "mcc":
             results["mcc"] = float(matthews_corrcoef(labels, predictions))
@@ -96,18 +86,13 @@ def compute_per_class_metrics(
         class_names = [f"class_{i}" for i in unique_classes]
     elif len(class_names) != len(unique_classes):
         raise ValueError(
-            f"Number of class names ({len(class_names)}) doesn't match "
-            f"number of classes ({len(unique_classes)})"
+            f"Number of class names ({len(class_names)}) doesn't match number of classes ({len(unique_classes)})"
         )
 
     # Compute per-class metrics
     f1_scores = f1_score(labels, predictions, average=None, zero_division=0, labels=unique_classes)
-    precision_scores = precision_score(
-        labels, predictions, average=None, zero_division=0, labels=unique_classes
-    )
-    recall_scores = recall_score(
-        labels, predictions, average=None, zero_division=0, labels=unique_classes
-    )
+    precision_scores = precision_score(labels, predictions, average=None, zero_division=0, labels=unique_classes)
+    recall_scores = recall_score(labels, predictions, average=None, zero_division=0, labels=unique_classes)
 
     per_class_metrics = {}
     for i, class_name in enumerate(class_names):
@@ -320,6 +305,5 @@ def compute_hypervolume_indicator(
         # For higher dimensions, use placeholder
         # In production, use pygmo or similar library
         raise NotImplementedError(
-            f"Hypervolume computation for {n_objectives}D not implemented. "
-            "Please use pygmo library: pip install pygmo"
+            f"Hypervolume computation for {n_objectives}D not implemented. Please use pygmo library: pip install pygmo"
         )

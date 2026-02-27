@@ -32,9 +32,3 @@ preprocessing:
   truncation: true
   padding: max_length
 
-# Evaluation
-evaluation:
-  batch_size: 32
-  metrics:
-    - accuracy
-    - f1_macro

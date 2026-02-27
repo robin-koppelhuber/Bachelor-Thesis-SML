@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class ConfigValidationError(ValueError):
     """Raised when configuration validation fails"""
+
     pass
 
 
@@ -34,22 +35,18 @@ def validate_preference_vector(pref_vector: List[float], num_tasks: int, index: 
     """
     if len(pref_vector) != num_tasks:
         raise ConfigValidationError(
-            f"Preference vector {index} has {len(pref_vector)} values but {num_tasks} tasks are configured.\n"
-            f"  Preference vector: {pref_vector}\n"
-            f"  Tasks: {num_tasks}"
+            f"Preference vector {index} has {len(pref_vector)} values but {num_tasks} tasks are configured.\n  Preference vector: {pref_vector}\n  Tasks: {num_tasks}"
         )
 
     pref_sum = sum(pref_vector)
     if abs(pref_sum - 1.0) > 1e-6:
         raise ConfigValidationError(
-            f"Preference vector {index} must sum to 1.0, got {pref_sum:.6f}\n"
-            f"  Preference vector: {pref_vector}"
+            f"Preference vector {index} must sum to 1.0, got {pref_sum:.6f}\n  Preference vector: {pref_vector}"
         )
 
     if any(p < 0 for p in pref_vector):
         raise ConfigValidationError(
-            f"Preference vector {index} contains negative values: {pref_vector}\n"
-            "  All preferences must be non-negative."
+            f"Preference vector {index} contains negative values: {pref_vector}\n  All preferences must be non-negative."
         )
 
 
@@ -82,15 +79,13 @@ def validate_poc_benchmark_config(cfg: DictConfig) -> None:
                 errors.append(str(e))
 
     # Validate execution mode
-    valid_modes = ['train_eval', 'train_only', 'eval_only']
-    mode = cfg.benchmark.get('mode', 'train_eval')
+    valid_modes = ["train_eval", "train_only", "eval_only"]
+    mode = cfg.benchmark.get("mode", "train_eval")
     if mode not in valid_modes:
-        errors.append(
-            f"Invalid benchmark.mode: {mode}. Must be one of {valid_modes}"
-        )
+        errors.append(f"Invalid benchmark.mode: {mode}. Must be one of {valid_modes}")
 
     # Validate cache directories if caching enabled
-    if cfg.benchmark.get('cache_enabled', True):
+    if cfg.benchmark.get("cache_enabled", True):
         try:
             eval_cache_dir = Path(cfg.paths.evaluation_cache)
             eval_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -129,27 +124,27 @@ def validate_training_config(cfg: DictConfig) -> None:
     errors = []
 
     # Validate training parameters
-    if hasattr(cfg.method, 'params'):
+    if hasattr(cfg.method, "params"):
         params = cfg.method.params
 
         # Check common training params
-        if 'learning_rate' in params and params.learning_rate <= 0:
+        if "learning_rate" in params and params.learning_rate <= 0:
             errors.append(f"learning_rate must be positive, got {params.learning_rate}")
 
-        if 'batch_size' in params and params.batch_size < 1:
+        if "batch_size" in params and params.batch_size < 1:
             errors.append(f"batch_size must be >= 1, got {params.batch_size}")
 
-        if 'num_epochs' in params and params.num_epochs < 1:
+        if "num_epochs" in params and params.num_epochs < 1:
             errors.append(f"num_epochs must be >= 1, got {params.num_epochs}")
 
         # Validate Chebyshev-specific params
-        if cfg.method.name == 'chebyshev':
-            if 'epsilon' in params and params.epsilon < 0:
+        if cfg.method.name == "chebyshev":
+            if "epsilon" in params and params.epsilon < 0:
                 errors.append(f"Chebyshev epsilon must be >= 0, got {params.epsilon}")
 
         # Validate TIES-specific params
-        if cfg.method.name == 'ties':
-            if 'k' in params and not (0 < params.k <= 1):
+        if cfg.method.name == "ties":
+            if "k" in params and not (0 < params.k <= 1):
                 errors.append(f"TIES k must be in (0, 1], got {params.k}")
 
     if errors:

@@ -96,7 +96,9 @@ class TIESMerging(BaseMergingMethod):
         task_vector_list = [task_vectors[name] for name in task_names]
         logger.info(f"  Stacking {n_tasks} task vectors...")
         stacked_vectors = torch.stack(task_vector_list, dim=0)  # (n_tasks, n_params)
-        logger.info(f"  Stacked shape: {stacked_vectors.shape}, device: {stacked_vectors.device}, dtype: {stacked_vectors.dtype}")
+        logger.info(
+            f"  Stacked shape: {stacked_vectors.shape}, device: {stacked_vectors.device}, dtype: {stacked_vectors.dtype}"
+        )
 
         # Step 1: Trim - Keep only top-k parameters by magnitude
         logger.info(f"  Step 1: Trimming (k={self.k})...")
@@ -115,9 +117,7 @@ class TIESMerging(BaseMergingMethod):
 
         # Step 3: Disjoint Merge - Average parameters with same sign
         logger.info(f"  Step 3: Disjoint merge...")
-        merged_vector = self._disjoint_merge(
-            trimmed_vectors, sign_vector, preference_vector
-        )
+        merged_vector = self._disjoint_merge(trimmed_vectors, sign_vector, preference_vector)
         logger.info(f"  ✓ Disjoint merge complete")
 
         # Free intermediate tensors
@@ -152,20 +152,24 @@ class TIESMerging(BaseMergingMethod):
             logger.warning(f"k={self.k} results in 0 parameters, keeping at least 1")
             k_params = 1
 
-        logger.info(f"    Trimming to top-{k_params:,} params ({self.k*100:.1f}%) per task from {n_params:,} total")
-        logger.info(f"    Device: {task_vectors.device}, Memory: {task_vectors.element_size() * task_vectors.nelement() / 1024**3:.2f} GB")
+        logger.info(f"    Trimming to top-{k_params:,} params ({self.k * 100:.1f}%) per task from {n_params:,} total")
+        logger.info(
+            f"    Device: {task_vectors.device}, Memory: {task_vectors.element_size() * task_vectors.nelement() / 1024**3:.2f} GB"
+        )
 
         # For each task vector, keep only top-k by absolute magnitude
-        logger.info(f"    Allocating output tensor ({task_vectors.element_size() * task_vectors.nelement() / 1024**3:.2f} GB)...")
+        logger.info(
+            f"    Allocating output tensor ({task_vectors.element_size() * task_vectors.nelement() / 1024**3:.2f} GB)..."
+        )
         trimmed_vectors = torch.zeros_like(task_vectors)
         logger.info(f"    ✓ Allocation complete")
 
         for i in range(n_tasks):
-            logger.info(f"    Processing task {i+1}/{n_tasks}...")
+            logger.info(f"    Processing task {i + 1}/{n_tasks}...")
 
             # Memory-efficient approach: use sampling-based threshold on large CPU tensors
             # topk and quantile on large CPU tensors can cause memory issues or segfaults
-            if task_vectors.device.type == 'cpu' and n_params > 10_000_000:
+            if task_vectors.device.type == "cpu" and n_params > 10_000_000:
                 logger.info(f"      Using sampling-based threshold (memory-efficient for large CPU tensors)")
                 # Get absolute values
                 abs_values = torch.abs(task_vectors[i])
@@ -197,9 +201,7 @@ class TIESMerging(BaseMergingMethod):
 
         return trimmed_vectors
 
-    def _elect_sign(
-        self, task_vectors: torch.Tensor, preference_vector: np.ndarray
-    ) -> torch.Tensor:
+    def _elect_sign(self, task_vectors: torch.Tensor, preference_vector: np.ndarray) -> torch.Tensor:
         """
         Elect Sign: Determine consensus sign for each parameter
 
@@ -232,9 +234,7 @@ class TIESMerging(BaseMergingMethod):
             logger.debug("Using preference-weighted sign election")
 
         else:
-            raise ValueError(
-                f"Unknown sign_consensus_method: {self.sign_consensus_method}"
-            )
+            raise ValueError(f"Unknown sign_consensus_method: {self.sign_consensus_method}")
 
         # Resolve zeros (ties) to majority sign
         # Only process where sign is zero to save memory

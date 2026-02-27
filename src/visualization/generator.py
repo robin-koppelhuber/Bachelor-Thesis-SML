@@ -3,23 +3,22 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from omegaconf import ListConfig
 
 from src.evaluation.metrics import (
-    compute_confusion_matrix_metrics,
     compute_preference_alignment,
     compute_task_interference,
 )
-from src.visualization.pareto import compute_pareto_frontier_2d, plot_pareto_frontier_2d
+from src.visualization.pareto import plot_pareto_frontier_2d
 from src.visualization.plots import (
-    plot_confusion_matrix,
+    format_metric_name,
+    format_task_name,
     plot_distance_to_utopia,
-    plot_method_comparison_dashboard,
-    plot_multi_radar_chart,
     plot_parallel_coordinates,
     plot_performance_heatmap,
     plot_performance_recovery,
@@ -30,196 +29,221 @@ from src.visualization.plots import (
 
 logger = logging.getLogger(__name__)
 
+# All supported single-metric plot types
+AVAILABLE_PLOT_TYPES: FrozenSet[str] = frozenset(
+    {
+        "heatmap",
+        "parallel_coordinates",
+        "distance_to_utopia",
+        "performance_recovery",
+        "radar_charts",
+        "task_interference",
+        "preference_alignment",
+        "pareto_frontiers",
+    }
+)
+
+
+def resolve_plot_types(plots_spec: Any) -> FrozenSet[str]:
+    """
+    Resolve a plot specification to a frozenset of plot type names.
+
+    Args:
+        plots_spec: One of:
+            - "all"                     → all available plot types
+            - ["all"]                   → all available plot types
+            - ["heatmap", "pareto_frontiers", ...]  → specific types
+            - []                        → no plots
+
+    Returns:
+        FrozenSet of plot type names to generate
+    """
+    if plots_spec == "all":
+        return AVAILABLE_PLOT_TYPES
+    if isinstance(plots_spec, (list, ListConfig)):
+        if "all" in plots_spec:
+            return AVAILABLE_PLOT_TYPES
+        return frozenset(plots_spec)
+    return frozenset()
+
 
 def generate_all_visualizations(
     all_results: List[Dict],
     task_names: List[str],
-    metric_name: str = "f1_macro",
+    metrics_config: List[Any],
     output_dir: Optional[Path] = None,
     method_name: Optional[str] = None,
     reference_points: Optional[Dict[str, Dict[str, float]]] = None,
-    additional_metrics: Optional[List[str]] = None,
+    cross_metric_plots_config: Optional[List[Any]] = None,
 ) -> Dict[str, plt.Figure]:
     """
-    Generate all visualizations for benchmark results
+    Generate all visualizations for benchmark results.
 
     Args:
-        all_results: List of result dictionaries, one per preference vector
-                    Each dict has: preference_vector, task_results
+        all_results: List of result dicts, one per preference vector.
+                     Each dict: {preference_vector, task_results}
         task_names: List of task names
-        metric_name: Primary metric to use for visualizations
+        metrics_config: List of metric configs from the benchmark config.
+                        Each item has .name (str) and .plots (str | list).
         output_dir: Optional directory to save plots
         method_name: Optional method name for titles
         reference_points: Optional reference points from single-task fine-tuned models
-        additional_metrics: Optional list of additional metrics to generate separate plots for
+        cross_metric_plots_config: Optional list of cross-metric plot specs (extensible stub)
 
     Returns:
         Dictionary mapping visualization names to matplotlib figures
     """
     logger.info("Generating comprehensive visualizations...")
-    figures = {}
+    figures: Dict[str, plt.Figure] = {}
 
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine which metrics to visualize
-    metrics_to_visualize = [metric_name]
-    if additional_metrics:
-        # Add additional metrics that aren't the primary metric
-        for metric in additional_metrics:
-            if metric != metric_name:
-                metrics_to_visualize.append(metric)
+    logger.info(f"Generating visualizations for {len(metrics_config)} metrics")
 
-    # Generate visualizations for each metric
-    logger.info(f"Generating visualizations for {len(metrics_to_visualize)} metrics: {', '.join(metrics_to_visualize)}")
+    for metric_cfg in metrics_config:
+        metric_name: str = metric_cfg.name
+        plot_types = resolve_plot_types(metric_cfg.get("plots", []))
 
-    for current_metric in metrics_to_visualize:
-        metric_suffix = f"_{current_metric}" if current_metric != metric_name else ""
-        logger.info(f"\nGenerating visualizations for metric: {current_metric}")
+        if not plot_types:
+            logger.debug(f"No plots requested for metric: {metric_name}")
+            continue
 
-        # 1. Performance heatmap (all preference vectors × all tasks)
-        try:
-            fig = generate_performance_heatmap(
-                all_results,
-                task_names,
-                current_metric,
-                output_dir / f"performance_heatmap{metric_suffix}" if output_dir else None,
-                method_name,
-            )
-            figures[f"performance_heatmap{metric_suffix}"] = fig
-        except Exception as e:
-            logger.error(f"Failed to generate performance heatmap for {current_metric}: {e}")
+        logger.info(f"Generating plots for metric '{metric_name}': {sorted(plot_types)}")
 
-        # 2. Parallel coordinates visualization
-        try:
-            fig = plot_parallel_coordinates(
-                all_results,
-                task_names,
-                current_metric,
-                output_dir / f"parallel_coordinates{metric_suffix}" if output_dir else None,
-                reference_points,
-            )
-            figures[f"parallel_coordinates{metric_suffix}"] = fig
-        except Exception as e:
-            logger.error(f"Failed to generate parallel coordinates plot for {current_metric}: {e}")
+        if "heatmap" in plot_types:
+            try:
+                save_path = output_dir / f"heatmap_{metric_name}" if output_dir else None
+                fig = _generate_performance_heatmap(all_results, task_names, metric_name, save_path, method_name)
+                figures[f"heatmap_{metric_name}"] = fig
+            except Exception as e:
+                logger.error(f"Failed to generate heatmap for {metric_name}: {e}")
 
-        # 3. Distance to utopia analysis
-        try:
-            fig = plot_distance_to_utopia(
-                all_results,
-                task_names,
-                current_metric,
-                output_dir / f"distance_to_utopia{metric_suffix}" if output_dir else None,
-                reference_points,
-            )
-            figures[f"distance_to_utopia{metric_suffix}"] = fig
-        except Exception as e:
-            logger.error(f"Failed to generate distance to utopia plot for {current_metric}: {e}")
+        if "parallel_coordinates" in plot_types:
+            try:
+                save_path = output_dir / f"parallel_coordinates_{metric_name}" if output_dir else None
+                fig = plot_parallel_coordinates(all_results, task_names, metric_name, save_path, reference_points)
+                figures[f"parallel_coordinates_{metric_name}"] = fig
+            except Exception as e:
+                logger.error(f"Failed to generate parallel_coordinates for {metric_name}: {e}")
 
-        # 4. Performance recovery analysis
-        try:
-            fig = plot_performance_recovery(
-                all_results,
-                task_names,
-                current_metric,
-                output_dir / f"performance_recovery{metric_suffix}" if output_dir else None,
-                reference_points,
-            )
-            figures[f"performance_recovery{metric_suffix}"] = fig
-        except Exception as e:
-            logger.error(f"Failed to generate performance recovery plot for {current_metric}: {e}")
+        if "distance_to_utopia" in plot_types:
+            try:
+                save_path = output_dir / f"distance_to_utopia_{metric_name}" if output_dir else None
+                fig = plot_distance_to_utopia(all_results, task_names, metric_name, save_path, reference_points)
+                figures[f"distance_to_utopia_{metric_name}"] = fig
+            except Exception as e:
+                logger.error(f"Failed to generate distance_to_utopia for {metric_name}: {e}")
 
-    # Generate metric-agnostic visualizations (using primary metric only)
-    # These don't need to be repeated for each metric
+        if "performance_recovery" in plot_types:
+            try:
+                save_path = output_dir / f"performance_recovery_{metric_name}" if output_dir else None
+                fig = plot_performance_recovery(all_results, task_names, metric_name, save_path, reference_points)
+                figures[f"performance_recovery_{metric_name}"] = fig
+            except Exception as e:
+                logger.error(f"Failed to generate performance_recovery for {metric_name}: {e}")
 
-    # 5. Radar charts for each preference vector (using primary metric)
-    try:
-        radar_figs = generate_radar_charts(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "radar_charts" if output_dir else None,
-            max_charts=5,  # Limit to avoid too many plots
-        )
-        figures.update(radar_figs)
-    except Exception as e:
-        logger.error(f"Failed to generate radar charts: {e}")
+        if "radar_charts" in plot_types:
+            try:
+                save_dir = output_dir / f"radar_charts_{metric_name}" if output_dir else None
+                radar_figs = _generate_radar_charts(all_results, task_names, metric_name, save_dir, max_charts=5)
+                figures.update(radar_figs)
+            except Exception as e:
+                logger.error(f"Failed to generate radar_charts for {metric_name}: {e}")
 
-    # 6. Task interference matrix (using primary metric)
-    try:
-        fig = generate_task_interference_viz(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "task_interference" if output_dir else None,
-        )
-        if fig:
-            figures["task_interference_matrix"] = fig
-    except Exception as e:
-        logger.error(f"Failed to generate task interference visualization: {e}")
+        if "task_interference" in plot_types:
+            try:
+                save_path = output_dir / f"task_interference_{metric_name}" if output_dir else None
+                fig = _generate_task_interference_viz(all_results, task_names, metric_name, save_path)
+                if fig:
+                    figures[f"task_interference_{metric_name}"] = fig
+            except Exception as e:
+                logger.error(f"Failed to generate task_interference for {metric_name}: {e}")
 
-    # 7. Pareto frontiers for all task pairs (using primary metric only)
-    try:
-        pareto_figs = generate_pareto_frontiers(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "pareto_frontiers" if output_dir else None,
-            method_name,
-            reference_points,
-        )
-        figures.update(pareto_figs)
-    except Exception as e:
-        logger.error(f"Failed to generate Pareto frontiers: {e}")
+        if "preference_alignment" in plot_types:
+            try:
+                save_dir = output_dir / f"preference_alignment_{metric_name}" if output_dir else None
+                alignment_figs = _generate_preference_alignment_plots(
+                    all_results, task_names, metric_name, save_dir, max_plots=3
+                )
+                figures.update(alignment_figs)
+            except Exception as e:
+                logger.error(f"Failed to generate preference_alignment for {metric_name}: {e}")
 
-    # 8. Preference alignment plots for selected preference vectors (using primary metric only)
-    try:
-        alignment_figs = generate_preference_alignment_plots(
-            all_results,
-            task_names,
-            metric_name,
-            output_dir / "preference_alignment" if output_dir else None,
-            max_plots=3,  # Show only most interesting cases
-        )
-        figures.update(alignment_figs)
-    except Exception as e:
-        logger.error(f"Failed to generate preference alignment plots: {e}")
+        if "pareto_frontiers" in plot_types:
+            try:
+                save_dir = output_dir / f"pareto_frontiers_{metric_name}" if output_dir else None
+                pareto_figs = _generate_pareto_frontiers(
+                    all_results, task_names, metric_name, save_dir, method_name, reference_points
+                )
+                figures.update(pareto_figs)
+            except Exception as e:
+                logger.error(f"Failed to generate pareto_frontiers for {metric_name}: {e}")
+
+    # Cross-metric plots
+    cross_figures = _generate_cross_metric_visualizations(
+        all_results,
+        task_names,
+        metrics_config,
+        cross_metric_plots_config,
+        output_dir,
+        reference_points,
+    )
+    figures.update(cross_figures)
 
     logger.info(f"Generated {len(figures)} visualizations successfully")
     return figures
 
 
-def generate_performance_heatmap(
+def _generate_cross_metric_visualizations(
+    all_results: List[Dict],
+    task_names: List[str],
+    metrics_config: List[Any],
+    cross_metric_plots_config: Optional[List[Any]],
+    output_dir: Optional[Path],
+    reference_points: Optional[Dict],
+) -> Dict[str, plt.Figure]:
+    """
+    Generate cross-metric plots (plots involving multiple metrics simultaneously).
+
+    Currently a stub: no built-in plot types. Future types can be added by implementing
+    a handler here and adding the type name to the config.
+    """
+    figures: Dict[str, plt.Figure] = {}
+    if not cross_metric_plots_config:
+        return figures
+
+    for plot_cfg in cross_metric_plots_config:
+        plot_type = plot_cfg.get("type", "")
+        logger.warning(f"Unknown or unimplemented cross-metric plot type: '{plot_type}'. Skipping.")
+
+    return figures
+
+
+def _generate_performance_heatmap(
     all_results: List[Dict],
     task_names: List[str],
     metric_name: str,
     save_path: Optional[Path],
     method_name: Optional[str] = None,
 ) -> plt.Figure:
-    """Generate performance heatmap across preference vectors and tasks"""
-    # Build performance matrix
+    """Extract data and call the dumb heatmap plotting function."""
     performance_matrix = []
     preference_labels = []
 
     for result in all_results:
         pref_vec = result["preference_vector"]
-        task_results = result["task_results"]
-
-        # Create label for preference vector
         pref_label = f"[{', '.join([f'{x:.2f}' for x in pref_vec])}]"
         preference_labels.append(pref_label)
-
-        # Extract performance for each task
-        row = [task_results[task].metrics[metric_name] for task in task_names]
+        row = [result["task_results"][task].metrics[metric_name] for task in task_names]
         performance_matrix.append(row)
 
-    performance_matrix = np.array(performance_matrix)
-
-    # Create plot
+    performance_matrix_np = np.array(performance_matrix)
     title = f"Performance Heatmap: {method_name}" if method_name else None
-    fig = plot_performance_heatmap(
-        performance_matrix,
+
+    return plot_performance_heatmap(
+        performance_matrix_np,
         task_names,
         preference_labels,
         metric_name,
@@ -227,93 +251,67 @@ def generate_performance_heatmap(
         title,
     )
 
-    return fig
 
-
-def generate_radar_charts(
+def _generate_radar_charts(
     all_results: List[Dict],
     task_names: List[str],
     metric_name: str,
     save_dir: Optional[Path],
     max_charts: int = 5,
 ) -> Dict[str, plt.Figure]:
-    """Generate radar charts for selected preference vectors"""
-    figures = {}
+    """Extract data and generate radar charts for representative preference vectors."""
+    figures: Dict[str, plt.Figure] = {}
 
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Select interesting preference vectors to visualize
-    # Include: equal preference, extreme preferences, and a few others
-    selected_results = select_representative_preferences(all_results, max_charts)
+    selected_results = _select_representative_preferences(all_results, max_charts)
 
     for i, result in enumerate(selected_results):
         pref_vec = result["preference_vector"]
-        task_results = result["task_results"]
-
-        # Extract scores for each task
-        task_scores = {task: task_results[task].metrics[metric_name] for task in task_names}
-
-        # Create label
+        task_scores = {task: result["task_results"][task].metrics[metric_name] for task in task_names}
         pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
-
-        # Generate plot
-        save_path = save_dir / f"radar_chart_{i}" if save_dir else None
+        save_path = save_dir / f"radar_chart_{metric_name}_{i}" if save_dir else None
         fig = plot_radar_chart(
             task_scores,
             metric_name,
             save_path,
             title=f"Preference: {pref_label}",
         )
-
-        figures[f"radar_chart_{i}"] = fig
+        figures[f"radar_chart_{metric_name}_{i}"] = fig
 
     return figures
 
 
-def generate_task_interference_viz(
+def _generate_task_interference_viz(
     all_results: List[Dict],
     task_names: List[str],
     metric_name: str,
     save_path: Optional[Path],
 ) -> Optional[plt.Figure]:
-    """Generate task interference correlation matrix"""
+    """Extract data, compute interference metric, and generate correlation matrix plot."""
     if len(all_results) < 2:
         logger.warning("Need at least 2 preference vectors to compute task interference")
         return None
 
-    # Extract task results across preference vectors
-    results_across_prefs = []
-    for result in all_results:
-        task_metrics = {}
-        for task in task_names:
-            task_metrics[task] = result["task_results"][task].metrics
-        results_across_prefs.append(task_metrics)
+    results_across_prefs = [
+        {task: result["task_results"][task].metrics for task in task_names} for result in all_results
+    ]
 
-    # Compute interference
     interference_dict = compute_task_interference(results_across_prefs, metric_name)
 
-    # Build correlation matrix
     num_tasks = len(task_names)
-    interference_matrix = np.eye(num_tasks)  # Diagonal is 1.0 (perfect correlation with self)
-
+    interference_matrix = np.eye(num_tasks)
     for (task1, task2), corr in interference_dict.items():
         i = task_names.index(task1)
         j = task_names.index(task2)
         interference_matrix[i, j] = corr
-        interference_matrix[j, i] = corr  # Symmetric
+        interference_matrix[j, i] = corr
 
-    # Generate plot
-    fig = plot_task_interference_matrix(
-        interference_matrix,
-        task_names,
-        save_path,
-    )
-
-    return fig
+    return plot_task_interference_matrix(interference_matrix, task_names, save_path)
 
 
-def generate_pareto_frontiers(
+def _generate_pareto_frontiers(
     all_results: List[Dict],
     task_names: List[str],
     metric_name: str,
@@ -321,50 +319,38 @@ def generate_pareto_frontiers(
     method_name: Optional[str] = None,
     reference_points: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, plt.Figure]:
-    """Generate Pareto frontier plots for all task pairs"""
-    figures = {}
+    """Extract data and generate Pareto frontier plots for all task pairs."""
+    figures: Dict[str, plt.Figure] = {}
 
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
 
     num_tasks = len(task_names)
-
-    # Generate for each task pair
     for i in range(num_tasks):
         for j in range(i + 1, num_tasks):
             task1, task2 = task_names[i], task_names[j]
 
-            # Extract scores for this task pair
             results_dict = {}
-
-            for idx, result in enumerate(all_results):
+            for result in all_results:
                 pref_vec = result["preference_vector"]
                 pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
-
                 score1 = result["task_results"][task1].metrics[metric_name]
                 score2 = result["task_results"][task2].metrics[metric_name]
-
                 results_dict[pref_label] = (score1, score2)
 
-            # Get single-task optimal points from reference points (fine-tuned models)
             single_task_optima = None
             if reference_points:
                 from src.benchmarks.reference_points import get_single_task_optima
 
-                single_task_optima_full = get_single_task_optima(reference_points, task_names, metric_name)
+                optima_full = get_single_task_optima(reference_points, task_names, metric_name)
+                single_task_optima = {
+                    f"{src}_optimal": (scores[task1], scores[task2])
+                    for src, scores in optima_full.items()
+                    if src in (task1, task2)
+                }
 
-                # Extract only the scores for this task pair
-                single_task_optima = {}
-                for source_task, task_scores in single_task_optima_full.items():
-                    # Only include if this source task is one of the two tasks being plotted
-                    if source_task == task1 or source_task == task2:
-                        score1 = task_scores[task1]
-                        score2 = task_scores[task2]
-                        single_task_optima[f"{source_task}_optimal"] = (score1, score2)
-
-            # Generate Pareto frontier
             save_path = save_dir / f"pareto_{task1}_vs_{task2}" if save_dir else None
-            title = f"Pareto Frontier Analysis: {task1} vs {task2}"
+            title = f"Pareto Frontier: {task1} vs {task2}"
             if method_name:
                 title += f" ({method_name})"
 
@@ -373,104 +359,77 @@ def generate_pareto_frontiers(
                 (task1, task2),
                 save_path=save_path,
                 title=title,
-                single_task_optima=single_task_optima if single_task_optima else None,
+                single_task_optima=single_task_optima or None,
             )
-
-            figures[f"pareto_{task1}_vs_{task2}"] = fig
+            figures[f"pareto_{task1}_vs_{task2}_{metric_name}"] = fig
 
     return figures
 
 
-def generate_preference_alignment_plots(
+def _generate_preference_alignment_plots(
     all_results: List[Dict],
     task_names: List[str],
     metric_name: str,
     save_dir: Optional[Path],
     max_plots: int = 3,
 ) -> Dict[str, plt.Figure]:
-    """Generate preference alignment plots for selected preference vectors"""
-    figures = {}
+    """Extract data and generate preference alignment plots for representative vectors."""
+    figures: Dict[str, plt.Figure] = {}
 
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Select interesting preference vectors
-    selected_results = select_representative_preferences(all_results, max_plots)
+    selected_results = _select_representative_preferences(all_results, max_plots)
 
     for i, result in enumerate(selected_results):
         pref_vec = np.array(result["preference_vector"])
         task_results = result["task_results"]
-
-        # Extract achieved scores
         achieved_scores = {task: task_results[task].metrics[metric_name] for task in task_names}
-
-        # Compute alignment metrics
         alignment_metrics = compute_preference_alignment(pref_vec, achieved_scores, metric_name)
 
-        # Get achieved vector in same order as task_names
         achieved_vec = np.array([achieved_scores[task] for task in task_names])
-
-        # Generate plot
         pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
         title = f"Preference Alignment: {pref_label}\n"
         title += f"Cosine Similarity: {alignment_metrics['cosine_similarity']:.3f}"
 
-        save_path = save_dir / f"alignment_{i}" if save_dir else None
+        save_path = save_dir / f"alignment_{metric_name}_{i}" if save_dir else None
         fig = plot_preference_alignment(
             pref_vec,
-            achieved_vec / achieved_vec.sum(),  # Normalize
+            achieved_vec / achieved_vec.sum(),
             task_names,
             save_path,
             title,
         )
-
-        figures[f"preference_alignment_{i}"] = fig
+        figures[f"preference_alignment_{metric_name}_{i}"] = fig
 
     return figures
 
 
-def select_representative_preferences(
+def _select_representative_preferences(
     all_results: List[Dict],
     max_count: int,
 ) -> List[Dict]:
     """
-    Select representative preference vectors for visualization
+    Select representative preference vectors for visualization. May result in some preference vectors not being visualized
 
-    Prioritizes:
-    1. Equal preference (if exists)
-    2. Extreme preferences (single task focused)
-    3. Random selection of others
-
-    Args:
-        all_results: List of all result dictionaries
-        max_count: Maximum number to select
-
-    Returns:
-        List of selected result dictionaries
+    Priority: equal preference → extreme preferences (max ≥ 0.7) → random fill.
     """
     if len(all_results) <= max_count:
         return all_results
 
     selected = []
 
-    # Try to find equal preference
     for result in all_results:
-        pref_vec = result["preference_vector"]
-        if len(set(pref_vec)) == 1:  # All elements are equal
+        if len(set(result["preference_vector"])) == 1:
             selected.append(result)
             break
 
-    # Try to find extreme preferences (one task gets >= 0.7)
     for result in all_results:
         if len(selected) >= max_count:
             break
+        if max(result["preference_vector"]) >= 0.7 and result not in selected:
+            selected.append(result)
 
-        pref_vec = result["preference_vector"]
-        if max(pref_vec) >= 0.7:
-            if result not in selected:
-                selected.append(result)
-
-    # Fill remaining slots with random selection
     remaining = [r for r in all_results if r not in selected]
     import random
 
@@ -490,7 +449,7 @@ def export_results_table(
     reference_points: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict:
     """
-    Export comprehensive results table to JSON and CSV
+    Export comprehensive results table to JSON and CSV.
 
     Creates a table with all metrics for all preference vectors and tasks,
     including reference points from single-task fine-tuned models.
@@ -498,7 +457,7 @@ def export_results_table(
     Args:
         all_results: List of result dictionaries
         task_names: List of task names
-        metrics: List of metric names
+        metrics: List of metric name strings
         output_dir: Optional directory to save exports
         method_name: Optional method name for labeling
         reference_points: Optional reference points from single-task models
@@ -506,100 +465,76 @@ def export_results_table(
     Returns:
         Dictionary containing the comprehensive results table
     """
-    import json
-    import pandas as pd
-    from src.visualization.plots import format_task_name, format_metric_name
-
     logger.info("Exporting comprehensive results table...")
 
-    # Convert DictConfig/ListConfig to regular Python objects if needed
     def to_python(obj):
         """Convert OmegaConf objects to regular Python types"""
-        if hasattr(obj, '__iter__') and not isinstance(obj, str):
-            if hasattr(obj, 'items'):
-                # Dictionary-like
+        if hasattr(obj, "__iter__") and not isinstance(obj, str):
+            if hasattr(obj, "items"):
                 return {k: to_python(v) for k, v in obj.items()}
             else:
-                # List-like
                 return [to_python(item) for item in obj]
         return obj
 
-    # Ensure task_names and metrics are regular Python lists
     task_names = to_python(task_names)
     metrics = to_python(metrics)
 
-    # Build comprehensive table
     rows = []
 
-    # Add results for each preference vector
     for result in all_results:
-        pref_vec = to_python(result["preference_vector"])  # Convert to regular list
+        pref_vec = to_python(result["preference_vector"])
         pref_label = f"[{', '.join([f'{x:.2f}' for x in pref_vec])}]"
 
         for task in task_names:
             task_result = result["task_results"][task]
-
             row = {
                 "preference_vector": pref_label,
-                "preference_raw": list(pref_vec),  # Ensure it's a regular list
-                "task": str(task),  # Ensure it's a regular string
+                "preference_raw": list(pref_vec),
+                "task": str(task),
                 "task_formatted": format_task_name(task),
                 "source": str(method_name) if method_name else "merged",
             }
-
-            # Add all metrics
             for metric in metrics:
                 if metric in task_result.metrics:
-                    # Convert metric value to float to ensure JSON serialization
                     metric_value = task_result.metrics[metric]
                     row[metric] = float(metric_value) if metric_value is not None else None
                     row[f"{metric}_formatted"] = format_metric_name(metric)
-
             rows.append(row)
 
-    # Add reference points (single-task fine-tuned models) if available
     if reference_points:
         for source_task, ref_metrics in reference_points.items():
             for task in task_names:
                 row = {
                     "preference_vector": f"Fine-tuned: {format_task_name(source_task)}",
                     "preference_raw": None,
-                    "task": str(task),  # Ensure it's a regular string
+                    "task": str(task),
                     "task_formatted": format_task_name(task),
                     "source": f"finetuned_{source_task}",
                 }
-
-                # Add all metrics
                 for metric in metrics:
                     metric_key = f"{task}_{metric}"
                     if metric_key in ref_metrics:
-                        # Convert to float to ensure JSON serialization
                         metric_value = ref_metrics[metric_key]
                         row[metric] = float(metric_value) if metric_value is not None else None
                         row[f"{metric}_formatted"] = format_metric_name(metric)
                     else:
                         row[metric] = None
-
                 rows.append(row)
 
-    # Create DataFrame
     df = pd.DataFrame(rows)
 
-    # Compute additional statistics
     summary_stats = {}
-
-    # Average performance per task across preference vectors (excluding fine-tuned)
     method_name_str = str(method_name) if method_name else "merged"
-    merged_results = df[df["source"].str.startswith("merged") | df["source"].str.startswith("train") | (df["source"] == method_name_str)]
+    merged_results = df[
+        df["source"].str.startswith("merged") | df["source"].str.startswith("train") | (df["source"] == method_name_str)
+    ]
     if not merged_results.empty:
         for task in task_names:
             task_data = merged_results[merged_results["task"] == task]
             summary_stats[f"{task}_avg"] = {
-                metric: float(task_data[metric].mean()) if metric in task_data.columns else None
-                for metric in metrics
+                metric: float(task_data[metric].mean()) if metric in task_data.columns else None for metric in metrics
             }
 
-    # Best preference vector per task per metric
     best_per_task = {}
     for task in task_names:
         task_data = merged_results[merged_results["task"] == task]
@@ -613,33 +548,24 @@ def export_results_table(
                     "value": float(best_row[metric]),
                 }
 
-    # Compute distance to utopia for each preference vector
     utopia_distances = {}
     for result in all_results:
-        pref_vec = to_python(result["preference_vector"])  # Convert to regular list
+        pref_vec = to_python(result["preference_vector"])
         pref_label = f"[{', '.join([f'{x:.2f}' for x in pref_vec])}]"
 
         for metric in metrics:
-            # Compute utopia point for this metric
             if reference_points:
                 utopia_scores = []
                 for task in task_names:
-                    max_score = 0
-                    for ref_task, ref_metrics in reference_points.items():
-                        score = ref_metrics.get(f"{task}_{metric}", 0)
-                        max_score = max(max_score, score)
+                    max_score = max(ref_metrics.get(f"{task}_{metric}", 0) for ref_metrics in reference_points.values())
                     utopia_scores.append(max_score)
                 utopia_point = np.array(utopia_scores)
             else:
-                utopia_point = np.array([
-                    max(r["task_results"][task].metrics[metric] for r in all_results)
-                    for task in task_names
-                ])
+                utopia_point = np.array(
+                    [max(r["task_results"][task].metrics[metric] for r in all_results) for task in task_names]
+                )
 
-            # Get scores for this preference vector
             scores = np.array([result["task_results"][task].metrics[metric] for task in task_names])
-
-            # Calculate distance
             distance = float(np.linalg.norm(scores - utopia_point))
 
             if pref_label not in utopia_distances:
@@ -649,51 +575,47 @@ def export_results_table(
                 "utopia_point": utopia_point.tolist(),
             }
 
-    # Create export dictionary with proper type conversion
     export_data = {
         "method": str(method_name) if method_name else None,
-        "tasks": list(task_names),  # Ensure it's a regular list
-        "metrics": list(metrics),  # Ensure it's a regular list
+        "tasks": list(task_names),
+        "metrics": list(metrics),
         "results": rows,
         "summary_statistics": summary_stats,
         "best_per_task": best_per_task,
         "utopia_distances": utopia_distances,
     }
 
-    # Save to files if output directory provided
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save as JSON
         json_path = output_dir / "comprehensive_results.json"
-        with open(json_path, 'w') as f:
+        with open(json_path, "w") as f:
             json.dump(export_data, f, indent=2)
         logger.info(f"Saved JSON results to: {json_path}")
 
-        # Save DataFrame as CSV
         csv_path = output_dir / "comprehensive_results.csv"
         df.to_csv(csv_path, index=False)
         logger.info(f"Saved CSV results to: {csv_path}")
 
-        # Save summary statistics as separate CSV
         if summary_stats:
             summary_df = pd.DataFrame(summary_stats).T
             summary_csv_path = output_dir / "summary_statistics.csv"
             summary_df.to_csv(summary_csv_path)
             logger.info(f"Saved summary statistics to: {summary_csv_path}")
 
-        # Save distance to utopia as CSV
         if utopia_distances:
             dist_rows = []
             for pref_label, metric_dists in utopia_distances.items():
                 for metric, dist_data in metric_dists.items():
-                    dist_rows.append({
-                        "preference_vector": pref_label,
-                        "metric": metric,
-                        "distance": dist_data["distance"],
-                        "utopia_point": str(dist_data["utopia_point"]),
-                    })
+                    dist_rows.append(
+                        {
+                            "preference_vector": pref_label,
+                            "metric": metric,
+                            "distance": dist_data["distance"],
+                            "utopia_point": str(dist_data["utopia_point"]),
+                        }
+                    )
             dist_df = pd.DataFrame(dist_rows)
             dist_csv_path = output_dir / "utopia_distances.csv"
             dist_df.to_csv(dist_csv_path, index=False)

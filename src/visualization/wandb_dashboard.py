@@ -417,7 +417,7 @@ trade-offs between tasks.
 
 ### Performance Overview
 
-${{runset:{project_name}:{','.join(run_ids)}}}
+${{runset:{project_name}:{",".join(run_ids)}}}
 
 ### Task Performance
 

@@ -124,7 +124,7 @@ def preprocess_dataset(
     )
 
     # Set format to PyTorch tensors for compatibility with DataLoader
-    if not hasattr(processed, '__iter__') or hasattr(processed, 'set_format'):
+    if not hasattr(processed, "__iter__") or hasattr(processed, "set_format"):
         # Only set format for non-streaming datasets
         processed.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 

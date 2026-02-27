@@ -28,14 +28,32 @@ benchmark:
     batch_size: 32
     num_samples: null  # null = use full dataset, integer = limit samples
     metrics:
-      - accuracy
-      - f1_macro
-      - f1_weighted
-      - f1_micro
-      - precision_macro
-      - recall_macro
-      - mcc  # Matthews Correlation Coefficient
-      - cohen_kappa  # Cohen's Kappa score
+      - name: accuracy
+        plots: all                          # generate all available plot types
+      - name: f1_macro
+        plots:                              # generate specific plots only
+          - heatmap
+          - parallel_coordinates
+          - distance_to_utopia
+          - performance_recovery
+          - pareto_frontiers
+      - name: f1_weighted
+        plots: []                           # compute metric, no plots
+      - name: f1_micro
+        plots: []
+      - name: precision_macro
+        plots: []
+      - name: recall_macro
+        plots: []
+      - name: mcc                           # Matthews Correlation Coefficient
+        plots:
+          - heatmap
+          - distance_to_utopia
+      - name: cohen_kappa
+        plots: []
+    # Cross-metric plots (involving multiple metrics simultaneously).
+    # Currently no built-in types; add entries here when new types are implemented.
+    cross_metric_plots: []
 
   # Execution mode (3 options):
   # - train_eval: Train & cache & evaluate & cache; reuse cached models if they exist (DEFAULT)

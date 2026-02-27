@@ -52,9 +52,7 @@ def get_memory() -> Memory:
         RuntimeError: If cache not initialized
     """
     if _memory is None:
-        raise RuntimeError(
-            "Cache not initialized. Call setup_cache() first in main.py or run.py"
-        )
+        raise RuntimeError("Cache not initialized. Call setup_cache() first in main.py or run.py")
     return _memory
 
 
@@ -105,10 +103,10 @@ def cached_evaluation(
         # Tag the cached function with metadata for debugging
         cached_func = memory.cache(func)
         cached_func.__cache_metadata__ = {
-            'method': method_name,
-            'preference': preference_vector,
-            'task': task_name,
-            'model_id': model_identifier,
+            "method": method_name,
+            "preference": preference_vector,
+            "task": task_name,
+            "model_id": model_identifier,
         }
         return cached_func
 
@@ -121,7 +119,7 @@ def evaluate_model_cached(
     preference_vector: tuple,
     task_name: str,
     model_identifier: Optional[str],
-    **eval_kwargs
+    **eval_kwargs,
 ) -> Dict[str, float]:
     """
     Cached wrapper for model evaluation
@@ -148,12 +146,6 @@ def evaluate_model_cached(
         logger.debug(f"Cache miss - evaluating {task} with {method}")
         return evaluate_fn(**kwargs)
 
-    result = _cached_eval(
-        method_name,
-        preference_vector,
-        task_name,
-        model_identifier,
-        **eval_kwargs
-    )
+    result = _cached_eval(method_name, preference_vector, task_name, model_identifier, **eval_kwargs)
 
     return result

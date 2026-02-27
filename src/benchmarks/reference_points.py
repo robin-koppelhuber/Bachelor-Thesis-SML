@@ -58,9 +58,11 @@ def compute_reference_points(
     # This ensures cache doesn't invalidate on irrelevant config changes
     dataset_configs = {task: cfg.datasets[task] for task in task_names}
     paths = {
-        'hf_models_cache_base': str(cfg.paths.hf_models_cache_base) if cfg.paths.hf_models_cache_base else None,
-        'hf_models_cache_finetuned': str(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
-        'hf_datasets_cache': str(cfg.paths.hf_datasets_cache) if cfg.paths.hf_datasets_cache else None,
+        "hf_models_cache_base": str(cfg.paths.hf_models_cache_base) if cfg.paths.hf_models_cache_base else None,
+        "hf_models_cache_finetuned": str(cfg.paths.hf_models_cache_finetuned)
+        if cfg.paths.hf_models_cache_finetuned
+        else None,
+        "hf_datasets_cache": str(cfg.paths.hf_datasets_cache) if cfg.paths.hf_datasets_cache else None,
     }
     torch_dtype = cfg.model.loading.torch_dtype
     batch_size = cfg.benchmark.evaluation.batch_size
@@ -127,7 +129,7 @@ def _compute_reference_points_cached(
     # Load tokenizer (shared across all models)
     tokenizer = load_tokenizer(
         model_id=model_id,
-        cache_dir=Path(paths['hf_models_cache_base']) if paths['hf_models_cache_base'] else None,
+        cache_dir=Path(paths["hf_models_cache_base"]) if paths["hf_models_cache_base"] else None,
     )
 
     reference_points = {}
@@ -141,9 +143,7 @@ def _compute_reference_points_cached(
         finetuned_model = load_model(
             model_id=dataset_cfg.finetuned_checkpoint,
             num_labels=None,  # Don't override for fine-tuned models
-            cache_dir=Path(paths['hf_models_cache_finetuned'])
-            if paths['hf_models_cache_finetuned']
-            else None,
+            cache_dir=Path(paths["hf_models_cache_finetuned"]) if paths["hf_models_cache_finetuned"] else None,
             device=device,
             torch_dtype=torch_dtype,
         )
@@ -161,7 +161,7 @@ def _compute_reference_points_cached(
                 dataset_path=eval_dataset_cfg.hf_dataset.path,
                 subset=eval_dataset_cfg.hf_dataset.get("subset", None),
                 split=eval_dataset_cfg.hf_dataset.split.test,
-                cache_dir=Path(paths['hf_datasets_cache']) if paths['hf_datasets_cache'] else None,
+                cache_dir=Path(paths["hf_datasets_cache"]) if paths["hf_datasets_cache"] else None,
             )
 
             test_dataset_processed = preprocess_dataset(
@@ -250,9 +250,7 @@ def get_utopia_point(
     for task in task_names:
         # Find the maximum performance on this task across all fine-tuned models
         key = f"{task}_{metric_name}"
-        max_performance = max(
-            ref_point[key] for ref_point in reference_points.values()
-        )
+        max_performance = max(ref_point[key] for ref_point in reference_points.values())
         utopia[task] = max_performance
 
     return utopia
