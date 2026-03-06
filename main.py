@@ -25,6 +25,8 @@ def main(cfg: DictConfig) -> None:
 
     Args:
         cfg: Hydra configuration
+
+    The later HydraConfig.get() only retrieves hydra internal configs specified in the hydra section in config.yaml
     """
     # Setup logging
     # Log file will be created in Hydra's output directory (e.g., outputs/2024-01-15/10-30-45/)

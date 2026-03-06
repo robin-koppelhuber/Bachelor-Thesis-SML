@@ -8,19 +8,17 @@ Usage:
     python -m src.benchmarks.poc.evaluate_saved  # Evaluates all models in cache_dir
 """
 
-import hashlib
-import json
 from pathlib import Path
 from typing import Dict
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
 from src.data.loaders import load_hf_dataset, preprocess_dataset
 from src.evaluation.evaluator import ClassificationEvaluator, EvaluationResult
-from src.models.loaders import apply_task_vector, compute_task_vector, load_model, load_tokenizer
+from src.models.loaders import apply_task_vector, load_model, load_tokenizer
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -191,7 +189,7 @@ def evaluate_saved_model(
 
         # Create dataloader
         test_dataloader = DataLoader(
-            test_dataset_processed,
+            test_dataset_processed,  # ty:ignore[invalid-argument-type]
             batch_size=cfg.benchmark.evaluation.batch_size,
             shuffle=False,
         )

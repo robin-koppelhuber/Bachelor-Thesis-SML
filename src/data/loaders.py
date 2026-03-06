@@ -51,7 +51,7 @@ def load_hf_dataset(
     if not streaming:
         logger.info(f"  Loaded {len(dataset)} samples")
     else:
-        logger.info(f"  Streaming dataset created")
+        logger.info("  Streaming dataset created")
     return dataset
 
 

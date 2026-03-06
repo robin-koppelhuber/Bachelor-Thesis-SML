@@ -1,9 +1,10 @@
 [![Python Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Frobin-koppelhuber%2FBachelor-Thesis-SML%2Fmaster%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=python&color=blue&logo=python&logoColor=white)](https://github.com/robin-koppelhuber/Bachelor-Thesis-SML/blob/master/pyproject.toml) [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv) ![PyTorch](https://img.shields.io/badge/PyTorch-2.9.1-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)
 
 ## About
-- This project is part of my bachelor thesis at the ETH Statistical Machine Learning Lab ([ETH SML](https://sml.inf.ethz.ch/))
-- The main goal of this project is to investigate some hypothesis about the performance of different model classes in the preference aware model merging regime
-- These insights should eventually inform the development of a novel method
+- This benchmark is part of my bachelor thesis at the ETH Statistical Machine Learning Lab ([ETH SML](https://sml.inf.ethz.ch/))
+- In short, we want to quantify the statistical learning theory bias of the function class of models parameterized by the convex set of weights of fine-tuned expert model that share the same pre-training model in the multi task learning (MTL) and multi objective learning (MOL) setting
+- This investigation is motivated by the fact that most model merging methods, especially data-free and zero shot methods, constrain themselves to the aforementioned convex set. Even though this is somewhat theoretically principled with investigations of linear mode connectivity and other phenomena as well as most importantly performance considerations, the results of this benchmark could prompt the development of novel methods. For more information see (*link final thesis*)
+- To this end, we benchmark multiple methods constrained to the convex set as well as more unconstrained methods like retraining from the pre-training model with chebyshev scalarization (...) or EPO search
 ---
 - Work in progress!
 

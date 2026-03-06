@@ -29,6 +29,8 @@ def log_figures_to_wandb(
 ) -> None:
     """
     Log matplotlib figures to W&B
+    Uses wand.Image, which converts images to .png and uses lossy compression
+    For full quality extract visualizations from SLURM directly
 
     Args:
         figures: Dictionary mapping figure names to matplotlib figures
@@ -259,7 +261,7 @@ def log_task_interference_to_wandb(
         for (task1, task2), correlation in interference_dict.items():
             wandb.log({f"interference/{task1}_vs_{task2}": correlation}, step=step)
 
-        logger.info(f"Logged task interference metrics to W&B")
+        logger.info("Logged task interference metrics to W&B")
 
     except ImportError:
         logger.warning("wandb not installed, skipping interference logging")
@@ -297,7 +299,7 @@ def log_preference_alignment_to_wandb(
         }
 
         wandb.log(log_dict, step=step)
-        logger.info(f"Logged preference alignment metrics to W&B")
+        logger.info("Logged preference alignment metrics to W&B")
 
     except ImportError:
         logger.warning("wandb not installed, skipping alignment logging")

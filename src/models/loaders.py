@@ -40,7 +40,7 @@ def load_model(
     logger.info(f"Loading model: {model_id}")
 
     # Determine dtype
-    if torch_dtype == "auto":
+    if torch_dtype == "auo":
         dtype = None  # Let AutoModel decide
     elif torch_dtype == "float32":
         dtype = torch.float32

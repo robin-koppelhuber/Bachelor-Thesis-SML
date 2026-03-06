@@ -184,7 +184,7 @@ def _compute_reference_points_cached(
 
             # Create dataloader
             test_dataloader = DataLoader(
-                test_dataset_processed,
+                test_dataset_processed,  # ty:ignore[invalid-argument-type]
                 batch_size=batch_size,
                 shuffle=False,
             )

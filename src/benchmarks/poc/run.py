@@ -6,7 +6,6 @@ This module implements the POC benchmark for model merging with roberta-base.
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -16,9 +15,9 @@ from src.data.loaders import load_hf_dataset, preprocess_dataset
 from src.evaluation.evaluator import ClassificationEvaluator, EvaluationResult
 from src.methods.registry import MethodRegistry
 from src.models.loaders import apply_task_vector, compute_task_vector, load_model, load_tokenizer
-from src.utils.cache import setup_cache, get_memory
+from src.utils.cache import get_memory, setup_cache
 from src.utils.config_validator import validate_poc_benchmark_config, validate_training_config
-from src.utils.logger import get_logger, setup_logging
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -222,7 +221,7 @@ def get_predictions_and_labels(
 
     # Create dataloader
     test_dataloader = DataLoader(
-        test_dataset_processed,
+        test_dataset_processed,  # ty:ignore[invalid-argument-type], HF datasets are duck-typed w.r.t. torch Datasets
         batch_size=cfg.benchmark.evaluation.batch_size,
         shuffle=False,
     )
@@ -440,7 +439,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     task_vector_template = None
     dataset_configs = {}
 
-    # Collect dataset configs (always needed)
+    # Collect dataset configs
     for task_name in cfg.benchmark.tasks:
         dataset_cfg = cfg.datasets[task_name]
         dataset_configs[task_name] = dataset_cfg
@@ -461,7 +460,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             logger.info(f"  Loading fine-tuned model: {dataset_cfg.finetuned_checkpoint}")
             finetuned_model = load_model(
                 model_id=dataset_cfg.finetuned_checkpoint,
-                num_labels=None,  # Don't pass num_labels for fine-tuned models
+                num_labels=None,  # Don't pass num_labels for fine-tuned models, otherwise weights might get reset
                 cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
                 device=device,
                 torch_dtype=cfg.model.loading.torch_dtype,
@@ -753,7 +752,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         all_results.append(
             {
                 "preference_vector": preference_vector,
-                "task_results": task_results,
+                "task_results": task_results,  # of type Evaluation Result
             }
         )
 

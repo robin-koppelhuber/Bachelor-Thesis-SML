@@ -162,6 +162,8 @@ def compute_task_interference(
     """
     Compute task interference as pairwise correlation between task performances
     across different preference vectors.
+    Formally the empirical covariance matrix where rows are the results of a single
+    model / preference vector across all tasks
 
     Negative correlation indicates interference: when Task A improves, Task B degrades.
 
