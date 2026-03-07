@@ -4,8 +4,8 @@ This script evaluates pre-trained models saved by training-based methods
 (e.g., Chebyshev, EPO) without re-training them.
 
 Usage:
-    python -m src.benchmarks.poc.evaluate_saved model_path=path/to/model.safetensors
-    python -m src.benchmarks.poc.evaluate_saved  # Evaluates all models in cache_dir
+    python -m src.benchmarks.evaluate_saved model_path=path/to/model.safetensors
+    python -m src.benchmarks.evaluate_saved  # Evaluates all models in cache_dir
 """
 
 from pathlib import Path

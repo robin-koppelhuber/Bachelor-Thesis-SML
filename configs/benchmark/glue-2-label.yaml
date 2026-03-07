@@ -38,6 +38,8 @@ benchmark:
           - distance_to_utopia
           - performance_recovery
           - pareto_frontiers
+          - normalized_skill_retention
+          - normalized_pareto_frontiers
       - name: f1_weighted
         plots: []                           # compute metric, no plots
       - name: f1_micro
@@ -72,6 +74,6 @@ benchmark:
   mode: train_eval
 
   # Caching (enabled by default, disable with benchmark.cache_enabled=false)
-  cache_enabled: false
+  cache_enabled: true
   force_retrain: false  # Override: ignore cached models, always retrain
   clear_cache: false    # Override: clear all caches before starting

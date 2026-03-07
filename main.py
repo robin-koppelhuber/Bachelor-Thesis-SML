@@ -92,118 +92,114 @@ def main(cfg: DictConfig) -> None:
 
     # Run benchmark based on config
     try:
-        if cfg.benchmark.name == "proof_of_concept":
-            from src.benchmarks.poc.run import run_poc_benchmark
+        from src.benchmarks.run import run_benchmark
 
-            results = run_poc_benchmark(cfg, device)
-            logger.info("\n" + "=" * 80)
-            logger.info("Benchmark Results:")
-            logger.info("=" * 80)
-            logger.info(f"Status: {results['status']}")
-            logger.info(f"Method: {results['method']}")
-            logger.info(f"Tasks: {results['tasks']}")
+        results = run_benchmark(cfg, device)
+        logger.info("\n" + "=" * 80)
+        logger.info("Benchmark Results:")
+        logger.info("=" * 80)
+        logger.info(f"Status: {results['status']}")
+        logger.info(f"Method: {results['method']}")
+        logger.info(f"Tasks: {results['tasks']}")
 
-            # Log summary table to W&B if enabled
-            if wandb_run:
-                import wandb
+        # Log summary table to W&B if enabled
+        if wandb_run:
+            import wandb
 
-                # Create summary table for all preference vectors and tasks
-                table_data = []
-                for result_entry in results.get("all_results", []):
-                    pref_vec = result_entry["preference_vector"]
-                    pref_str = str(pref_vec)
-                    task_results = result_entry["task_results"]
+            # Create summary table for all preference vectors and tasks
+            table_data = []
+            for result_entry in results.get("all_results", []):
+                pref_vec = result_entry["preference_vector"]
+                pref_str = str(pref_vec)
+                task_results = result_entry["task_results"]
 
-                    for task_name, task_result in task_results.items():
-                        row = {
-                            "preference_vector": pref_str,
-                            "task": task_name,
-                        }
-                        row.update(task_result.metrics)
-                        table_data.append(row)
+                for task_name, task_result in task_results.items():
+                    row = {
+                        "preference_vector": pref_str,
+                        "task": task_name,
+                    }
+                    row.update(task_result.metrics)
+                    table_data.append(row)
 
-                # Create W&B table
-                if table_data:
-                    columns = list(table_data[0].keys())
-                    table = wandb.Table(columns=columns, data=[list(row.values()) for row in table_data])
-                    wandb.log({"results_summary": table})
+            # Create W&B table
+            if table_data:
+                columns = list(table_data[0].keys())
+                table = wandb.Table(columns=columns, data=[list(row.values()) for row in table_data])
+                wandb.log({"results_summary": table})
 
-                    # Log final summary metrics
-                    wandb.summary["num_preference_vectors"] = len(results["all_results"])
-                    wandb.summary["num_tasks"] = len(results["tasks"])
-                    wandb.summary["method"] = results["method"]
-                    wandb.summary["status"] = results["status"]
+                # Log final summary metrics
+                wandb.summary["num_preference_vectors"] = len(results["all_results"])
+                wandb.summary["num_tasks"] = len(results["tasks"])
+                wandb.summary["method"] = results["method"]
+                wandb.summary["status"] = results["status"]
 
-                # Log visualizations to W&B if available
-                if "figures" in results and results["figures"]:
-                    logger.info("Logging visualizations to W&B...")
-                    try:
-                        from src.visualization.wandb_viz import (
-                            create_visualization_artifact,
-                            log_figures_to_wandb,
-                        )
-
-                        # Log figures as images
-                        log_figures_to_wandb(results["figures"])
-
-                        # Create artifact with all saved plot files
-                        viz_dir = output_dir / "visualizations"
-                        if viz_dir.exists():
-                            plot_files = list(viz_dir.glob("**/*.png"))
-                            if plot_files:
-                                create_visualization_artifact(
-                                    plot_files=plot_files,
-                                    artifact_name=f"visualizations_{cfg.method.name}_{cfg.benchmark.name}",
-                                    artifact_type="plots",
-                                    description=f"Visualizations for {cfg.method.name} on {cfg.benchmark.name}",
-                                    metadata={
-                                        "method": cfg.method.name,
-                                        "benchmark": cfg.benchmark.name,
-                                        "num_tasks": len(results["tasks"]),
-                                        "num_preference_vectors": len(results["all_results"]),
-                                    },
-                                )
-                                logger.info(f"✓ Created W&B artifact with {len(plot_files)} plot files")
-
-                    except Exception as e:
-                        logger.error(f"Failed to log visualizations to W&B: {e}")
-
-                # Log dashboard URL and create report template
+            # Log visualizations to W&B if available
+            if "figures" in results and results["figures"]:
+                logger.info("Logging visualizations to W&B...")
                 try:
-                    from src.visualization.wandb_dashboard import (
-                        create_report_template,
-                        log_dashboard_url,
+                    from src.visualization.wandb_viz import (
+                        create_visualization_artifact,
+                        log_figures_to_wandb,
                     )
 
-                    # Log dashboard URL
-                    dashboard_url = log_dashboard_url(
-                        project_name=cfg.wandb.project,
-                        entity=cfg.wandb.entity,
-                        dashboard_name="Benchmark-Dashboard",
-                    )
-                    logger.info(f"\n{'=' * 80}")
-                    logger.info("W&B Dashboard")
-                    logger.info(f"{'=' * 80}")
-                    logger.info(f"View your results at: {wandb_run.get_url()}")
-                    logger.info(f"Suggested dashboard URL: {dashboard_url}")
+                    # Log figures as images
+                    log_figures_to_wandb(results["figures"])
 
-                    # Create and save report template
-                    report_md = create_report_template(
-                        project_name=cfg.wandb.project,
-                        run_ids=[wandb_run.id],
-                        title=f"{cfg.method.name} Model Merging Benchmark",
-                    )
-
-                    report_path = output_dir / "wandb_report_template.md"
-                    report_path.write_text(report_md)
-                    logger.info(f"\n✓ Report template saved to: {report_path}")
-                    logger.info("  Upload this to W&B Reports: https://docs.wandb.ai/guides/reports")
+                    # Create artifact with all saved plot files
+                    viz_dir = output_dir / "visualizations"
+                    if viz_dir.exists():
+                        plot_files = list(viz_dir.glob("**/*.png"))
+                        if plot_files:
+                            create_visualization_artifact(
+                                plot_files=plot_files,
+                                artifact_name=f"visualizations_{cfg.method.name}_{cfg.benchmark.name}",
+                                artifact_type="plots",
+                                description=f"Visualizations for {cfg.method.name} on {cfg.benchmark.name}",
+                                metadata={
+                                    "method": cfg.method.name,
+                                    "benchmark": cfg.benchmark.name,
+                                    "num_tasks": len(results["tasks"]),
+                                    "num_preference_vectors": len(results["all_results"]),
+                                },
+                            )
+                            logger.info(f"✓ Created W&B artifact with {len(plot_files)} plot files")
 
                 except Exception as e:
-                    logger.warning(f"Failed to create report template: {e}")
+                    logger.error(f"Failed to log visualizations to W&B: {e}")
 
-        else:
-            raise ValueError(f"Unknown benchmark: {cfg.benchmark.name}")
+            # Log dashboard URL and create report template
+            try:
+                from src.visualization.wandb_dashboard import (
+                    create_report_template,
+                    log_dashboard_url,
+                )
+
+                # Log dashboard URL
+                dashboard_url = log_dashboard_url(
+                    project_name=cfg.wandb.project,
+                    entity=cfg.wandb.entity,
+                    dashboard_name="Benchmark-Dashboard",
+                )
+                logger.info(f"\n{'=' * 80}")
+                logger.info("W&B Dashboard")
+                logger.info(f"{'=' * 80}")
+                logger.info(f"View your results at: {wandb_run.get_url()}")
+                logger.info(f"Suggested dashboard URL: {dashboard_url}")
+
+                # Create and save report template
+                report_md = create_report_template(
+                    project_name=cfg.wandb.project,
+                    run_ids=[wandb_run.id],
+                    title=f"{cfg.method.name} Model Merging Benchmark",
+                )
+
+                report_path = output_dir / "wandb_report_template.md"
+                report_path.write_text(report_md)
+                logger.info(f"\n✓ Report template saved to: {report_path}")
+                logger.info("  Upload this to W&B Reports: https://docs.wandb.ai/guides/reports")
+
+            except Exception as e:
+                logger.warning(f"Failed to create report template: {e}")
 
     except Exception as e:
         logger.error(f"Benchmark failed with error: {e}")

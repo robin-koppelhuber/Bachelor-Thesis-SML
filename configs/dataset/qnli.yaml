@@ -6,20 +6,20 @@ num_labels: 2
 
 # HuggingFace dataset
 hf_dataset:
-  path: nyu-mll/qnli # ~116k samples
+  path: nyu-mll/glue # ~116k samples
   subset: qnli
   split:
     train: train
-    validation: validation_matched
-    test: validation_matched  # Use validation as test
+    validation: validation
+    test: validation  # GLUE QNLI has no held-out test labels; use validation as test
 
 # Fine-tuned model checkpoint
 finetuned_checkpoint: textattack/roberta-base-QNLI
 
 # Preprocessing
 preprocessing:
-  text_column: premise  # Will concatenate with hypothesis
-  text_column_2: hypothesis
+  text_column: question
+  text_column_2: sentence
   label_column: label
   max_length: 512
   truncation: true

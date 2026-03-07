@@ -4,9 +4,12 @@ defaults:
   - model: roberta_base
   - method: ties
   - dataset@datasets.ag_news: ag_news
+  - dataset@datasets.cola: cola
   - dataset@datasets.imdb: imdb
   - dataset@datasets.mnli: mnli
   - dataset@datasets.mrpc: mrpc
+  - dataset@datasets.qnli: qnli
+  - dataset@datasets.sst2: sst2
   - optional cluster: null
 
 # Global settings

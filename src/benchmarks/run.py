@@ -1,6 +1,6 @@
-"""Proof of Concept benchmark runner
+"""Benchmark runner
 
-This module implements the POC benchmark for model merging with roberta-base.
+This module implements the generic benchmark runner for model merging.
 """
 
 from pathlib import Path
@@ -340,9 +340,9 @@ def perform_evaluation(
     return result
 
 
-def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
+def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     """
-    Run proof of concept benchmark
+    Run benchmark
 
     Args:
         cfg: Hydra configuration
@@ -352,7 +352,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         Dictionary of results
     """
     logger.info("=" * 80)
-    logger.info("Starting POC Benchmark")
+    logger.info(f"Starting Benchmark: {cfg.benchmark.name}")
     logger.info("=" * 80)
 
     # Validate configuration before execution

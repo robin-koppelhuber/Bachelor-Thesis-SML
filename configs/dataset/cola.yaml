@@ -6,20 +6,19 @@ num_labels: 2
 
 # HuggingFace dataset
 hf_dataset:
-  path: nyu-mll/cola # ~10.7k samples
+  path: nyu-mll/glue # ~10.7k samples
   subset: cola
   split:
     train: train
-    validation: validation_matched
-    test: validation_matched  # Use validation as test
+    validation: validation
+    test: validation  # GLUE CoLA has no held-out test labels; use validation as test
 
 # Fine-tuned model checkpoint
 finetuned_checkpoint: textattack/roberta-base-CoLA
 
 # Preprocessing
 preprocessing:
-  text_column: premise  # Will concatenate with hypothesis
-  text_column_2: hypothesis
+  text_column: sentence  # single-sentence acceptability task
   label_column: label
   max_length: 512
   truncation: true
