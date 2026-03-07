@@ -256,6 +256,30 @@ def get_utopia_point(
     return utopia
 
 
+def get_diagonal_optima(
+    reference_points: Dict[str, Dict[str, float]],
+    task_names: List[str],
+    metric_name: str,
+) -> Dict[str, float]:
+    """
+    Extract each task's fine-tuned model performance on its own task (diagonal of reference matrix).
+
+    This is the theoretically correct oracle baseline for normalization: the performance of
+    the model specifically optimized for task i, evaluated on task i. Used as the denominator
+    in the normalized skill retention metric: skill_retained = metric(merged, task) / metric(ft, task).
+
+    Args:
+        reference_points: Output from compute_reference_points()
+        task_names: List of task names
+        metric_name: Metric to extract (e.g., "cohen_kappa", "accuracy")
+
+    Returns:
+        Dictionary mapping each task to its fine-tuned model's own-task performance
+        Example: {"ag_news": 0.92, "imdb": 0.89, "mnli": 0.84, "mrpc": 0.87}
+    """
+    return {task: reference_points[task][f"{task}_{metric_name}"] for task in task_names}
+
+
 def get_single_task_optima(
     reference_points: Dict[str, Dict[str, float]],
     task_names: List[str],

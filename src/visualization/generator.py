@@ -14,11 +14,12 @@ from src.evaluation.metrics import (
     compute_preference_alignment,
     compute_task_interference,
 )
-from src.visualization.pareto import plot_pareto_frontier_2d
+from src.visualization.pareto import plot_normalized_pareto_frontier_2d, plot_pareto_frontier_2d
 from src.visualization.plots import (
     format_metric_name,
     format_task_name,
     plot_distance_to_utopia,
+    plot_normalized_skill_retention,
     plot_parallel_coordinates,
     plot_performance_heatmap,
     plot_performance_recovery,
@@ -36,6 +37,8 @@ AVAILABLE_PLOT_TYPES: FrozenSet[str] = frozenset(
         "parallel_coordinates",
         "distance_to_utopia",
         "performance_recovery",
+        "normalized_skill_retention",
+        "normalized_pareto_frontiers",
         "radar_charts",
         "task_interference",
         "preference_alignment",
@@ -180,6 +183,24 @@ def generate_all_visualizations(
                 figures.update(pareto_figs)
             except Exception as e:
                 logger.error(f"Failed to generate pareto_frontiers for {metric_name}: {e}")
+
+        if "normalized_skill_retention" in plot_types:
+            try:
+                save_path = output_dir / f"normalized_skill_retention_{metric_name}" if output_dir else None
+                fig = plot_normalized_skill_retention(all_results, task_names, metric_name, save_path, reference_points)
+                figures[f"normalized_skill_retention_{metric_name}"] = fig
+            except Exception as e:
+                logger.error(f"Failed to generate normalized_skill_retention for {metric_name}: {e}")
+
+        if "normalized_pareto_frontiers" in plot_types:
+            try:
+                save_dir = output_dir / f"normalized_pareto_frontiers_{metric_name}" if output_dir else None
+                norm_pareto_figs = _generate_normalized_pareto_frontiers(
+                    all_results, task_names, metric_name, save_dir, method_name, reference_points
+                )
+                figures.update(norm_pareto_figs)
+            except Exception as e:
+                logger.error(f"Failed to generate normalized_pareto_frontiers for {metric_name}: {e}")
 
     # Cross-metric plots
     cross_figures = _generate_cross_metric_visualizations(
@@ -362,6 +383,81 @@ def _generate_pareto_frontiers(
                 single_task_optima=single_task_optima or None,
             )
             figures[f"pareto_{task1}_vs_{task2}_{metric_name}"] = fig
+
+    return figures
+
+
+def _generate_normalized_pareto_frontiers(
+    all_results: List[Dict],
+    task_names: List[str],
+    metric_name: str,
+    save_dir: Optional[Path],
+    method_name: Optional[str] = None,
+    reference_points: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Dict[str, plt.Figure]:
+    """Generate normalized Pareto frontier plots (kappa-ratio axes) for all task pairs.
+
+    Requires cohen_kappa to be present in both task_results and reference_points.
+    Skips silently if cohen_kappa is unavailable.
+    """
+    figures: Dict[str, plt.Figure] = {}
+
+    if not reference_points:
+        logger.warning("reference_points required for normalized_pareto_frontiers; skipping.")
+        return figures
+
+    # Check cohen_kappa availability
+    sample_metrics = all_results[0]["task_results"][task_names[0]].metrics
+    if "cohen_kappa" not in sample_metrics:
+        logger.warning(
+            "cohen_kappa not found in task results; skipping normalized_pareto_frontiers. "
+            "Add 'cohen_kappa' to the benchmark metrics config."
+        )
+        return figures
+
+    if save_dir:
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+    from src.benchmarks.reference_points import get_diagonal_optima, get_single_task_optima
+
+    diagonal_kappas = get_diagonal_optima(reference_points, task_names, "cohen_kappa")
+
+    num_tasks = len(task_names)
+    for i in range(num_tasks):
+        for j in range(i + 1, num_tasks):
+            task1, task2 = task_names[i], task_names[j]
+
+            # Collect kappa scores for each preference vector
+            results_dict = {}
+            for result in all_results:
+                pref_vec = result["preference_vector"]
+                pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
+                kappa1 = result["task_results"][task1].metrics["cohen_kappa"]
+                kappa2 = result["task_results"][task2].metrics["cohen_kappa"]
+                results_dict[pref_label] = (kappa1, kappa2)
+
+            # Single-task optima kappas (off-diagonal: ft model for one task, evaluated on both)
+            optima_full = get_single_task_optima(reference_points, task_names, "cohen_kappa")
+            single_task_optima = {
+                f"{src}_optimal": (scores[task1], scores[task2])
+                for src, scores in optima_full.items()
+                if src in (task1, task2)
+            }
+
+            save_path = save_dir / f"norm_pareto_{task1}_vs_{task2}" if save_dir else None
+            title = f"Normalized Pareto Frontier: {task1} vs {task2}"
+            if method_name:
+                title += f" ({method_name})"
+
+            fig = plot_normalized_pareto_frontier_2d(
+                results=results_dict,
+                task_names=(task1, task2),
+                diagonal_kappas=diagonal_kappas,
+                save_path=save_path,
+                title=title,
+                single_task_optima=single_task_optima or None,
+            )
+            figures[f"norm_pareto_{task1}_vs_{task2}_{metric_name}"] = fig
 
     return figures
 

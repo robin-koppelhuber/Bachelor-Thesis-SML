@@ -67,36 +67,52 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         task_losses: torch.Tensor,
         preference_vector: torch.Tensor,
         utopia_point: Optional[torch.Tensor] = None,
+        nadir_point: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
         """
-        Compute Chebyshev scalarization loss
+        Compute normalized Chebyshev scalarization loss (excess risk formulation).
 
-        Chebyshev scalarization minimizes the maximum weighted deviation from the utopia point:
-            minimize: max_i { w_i * (loss_i - utopia_loss_i) }
+        When nadir_point is provided (standard path), computes normalized excess risk:
 
-        Since we're working with losses (lower is better), the deviation measures how much
-        worse the current loss is compared to the best achievable loss (utopia point).
+            normalized_excess_risk_i = (loss_i - utopia_i) / (nadir_i - utopia_i)
+
+        This maps [utopia, nadir] to [0, 1] for each task, making objectives comparable
+        across tasks with different loss scales and number of classes.
+
+        The Chebyshev objective then becomes:
+            minimize: max_i { w_i * normalized_excess_risk_i }
+                    + epsilon * sum_i { w_i * normalized_excess_risk_i }  (if augmented)
+
+        Values can exceed 1 early in training (loss worse than nadir) or be negative
+        (loss better than utopia, e.g. via task transfer) — both are valid.
+
+        When nadir_point is None (legacy fallback), uses unnormalized deviations.
 
         Args:
-            task_losses: Losses for each task (n_tasks,) - positive values, lower is better
+            task_losses: Current losses for each task (n_tasks,)
             preference_vector: Preference weights (n_tasks,)
-            utopia_point: Best achievable loss per task (n_tasks,) - positive losses from fine-tuned models
+            utopia_point: Best achievable loss per task from fine-tuned models (n_tasks,)
+            nadir_point: Base model loss per task with random classification head (n_tasks,)
 
         Returns:
             Scalar loss value to minimize
         """
-        # Weighted deviations from utopia point
-        # utopia_point contains best achievable losses (e.g., 0.13), task_losses are current losses (e.g., 1.4)
-        # deviation = task_loss - utopia_point = 1.4 - 0.13 = 1.27 (positive, measures degradation)
-        weighted_deviations = preference_vector * (task_losses - utopia_point)
+        if nadir_point is not None:
+            # Normalized excess risk: (loss - utopia) / (nadir - utopia)
+            scale = (nadir_point - utopia_point).clamp(min=1e-8)
+            deviations = (task_losses - utopia_point) / scale
+        else:
+            # Legacy fallback: unnormalized deviations (old behavior without nadir)
+            deviations = task_losses - utopia_point
+
+        weighted_deviations = preference_vector * deviations
 
         # Chebyshev: minimize maximum weighted deviation
         chebyshev_loss = weighted_deviations.max()
 
         # Augmented Chebyshev: add sum term for smoothness
         if self.use_augmented:
-            # Use non-in-place addition to avoid modifying tensor in computation graph
             chebyshev_loss = chebyshev_loss + self.epsilon * weighted_deviations.sum()
 
         return chebyshev_loss
@@ -107,23 +123,44 @@ class ChebyshevFineTuning(BaseTrainingMethod):
         preference_vector: np.ndarray,
         dataset_configs: Dict,
         cache_dir: Optional[str] = None,
+        reference_losses: Optional[Dict] = None,
     ) -> Dict:
         """
-        Get Chebyshev-specific training parameters
+        Get Chebyshev-specific training parameters (utopia and nadir points).
 
-        Computes utopia point for use in training loop
+        When reference_losses is provided (standard path from the benchmark runner),
+        builds utopia and nadir tensors directly from the precomputed values. This avoids
+        redundant model loading and uses the correct reference split (first half of
+        stratified test/validation split, disjoint from benchmark evaluation data).
+
+        Falls back to internal utopia computation if reference_losses is not provided
+        (legacy path, does not compute nadir — normalized formula degrades gracefully).
 
         Args:
-            task_names: List of task names
+            task_names: List of task names (must match reference_losses keys)
             preference_vector: Preference weights
             dataset_configs: Dataset configurations
-            cache_dir: Optional cache directory for loading fine-tuned models
+            cache_dir: Cache dir for loading fine-tuned models (legacy fallback only)
+            reference_losses: Precomputed {"task": {"utopia": float, "nadir": float}, ...}
 
         Returns:
-            Dictionary with 'utopia_point' for training
+            Dictionary with 'utopia_point' and 'nadir_point' tensors for training
         """
+        if reference_losses is not None:
+            utopia = torch.tensor([reference_losses[t]["utopia"] for t in task_names], dtype=torch.float32)
+            nadir = torch.tensor([reference_losses[t]["nadir"] for t in task_names], dtype=torch.float32)
+            logger.info(f"Utopia losses (from reference): {utopia.tolist()}")
+            logger.info(f"Nadir losses  (from reference): {nadir.tolist()}")
+            return {"utopia_point": utopia, "nadir_point": nadir}
+
+        # Legacy fallback: compute utopia internally (no nadir → unnormalized objective)
+        logger.warning(
+            "reference_losses not provided to Chebyshev; computing utopia internally. "
+            "Normalized (nadir-scaled) objective will NOT be used. "
+            "Pass reference_losses from the benchmark runner for the correct formulation."
+        )
         utopia_point = self._compute_utopia_point(task_names, preference_vector, dataset_configs, cache_dir=cache_dir)
-        return {"utopia_point": utopia_point}
+        return {"utopia_point": utopia_point, "nadir_point": None}
 
     def _compute_utopia_point(
         self,

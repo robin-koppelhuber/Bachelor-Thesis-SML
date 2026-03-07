@@ -168,6 +168,7 @@ def get_predictions_and_labels(
     device: torch.device,
     cfg: DictConfig,
     num_samples: Optional[int] = None,
+    split_seed: Optional[int] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Get model predictions and true labels for a task
@@ -184,10 +185,13 @@ def get_predictions_and_labels(
         device: Device to run on
         cfg: Full configuration
         num_samples: Optional limit on number of samples (for cache key)
+        split_seed: Seed for the stratified 50/50 evaluation split (second half)
 
     Returns:
         Tuple of (predictions, labels) as numpy arrays
     """
+    from src.benchmarks.reference_losses import get_evaluation_split
+
     # Create base model
     merged_model = create_base_model_fn(num_labels=dataset_cfg.num_labels)
 
@@ -195,7 +199,7 @@ def get_predictions_and_labels(
     merged_model = apply_task_vector(merged_model, merged_task_vector, scaling=1.0)
     merged_model.eval()
 
-    # Load and preprocess test dataset
+    # Load test dataset and apply stratified 50/50 split (second half for evaluation)
     test_dataset = load_hf_dataset(
         dataset_path=dataset_cfg.hf_dataset.path,
         subset=dataset_cfg.hf_dataset.get("subset", None),
@@ -203,12 +207,17 @@ def get_predictions_and_labels(
         cache_dir=Path(cfg.paths.hf_datasets_cache) if cfg.paths.hf_datasets_cache else None,
     )
 
+    label_column = dataset_cfg.preprocessing.label_column
+    seed = split_seed if split_seed is not None else cfg.get("seed", 42)
+    test_dataset = get_evaluation_split(test_dataset, label_column=label_column, split_seed=seed)
+    logger.info(f"  Evaluation split: {len(test_dataset)} samples (second half of stratified split, seed={seed})")
+
     test_dataset_processed = preprocess_dataset(
         dataset=test_dataset,
         tokenizer=tokenizer,
         text_column=dataset_cfg.preprocessing.text_column,
         text_column_2=dataset_cfg.preprocessing.get("text_column_2", None),
-        label_column=dataset_cfg.preprocessing.label_column,
+        label_column=label_column,
         label_map=dataset_cfg.preprocessing.get("label_map", None),
         max_length=dataset_cfg.preprocessing.max_length,
         truncation=dataset_cfg.preprocessing.truncation,
@@ -317,6 +326,7 @@ def perform_evaluation(
         device=device,
         cfg=cfg,
         num_samples=cfg.benchmark.evaluation.num_samples,
+        split_seed=cfg.get("seed", 42),
     )
 
     # Compute metrics from predictions
@@ -424,8 +434,26 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     # Import to check method type
     from src.methods.base import BaseTrainingMethod
 
+    is_training_method = isinstance(method, BaseTrainingMethod)
+
     # Check if method requires task vectors (task-arithmetic methods)
-    requires_task_vectors = not isinstance(method, BaseTrainingMethod)
+    requires_task_vectors = not is_training_method
+
+    # Step 2b: Compute reference losses (utopia + nadir) for training-based methods
+    reference_losses = None
+    if is_training_method:
+        logger.info("\n" + "=" * 80)
+        logger.info("Step 2b: Computing reference losses (utopia + nadir) for Chebyshev training objective")
+        logger.info("=" * 80)
+
+        from src.benchmarks.reference_losses import compute_reference_losses
+
+        reference_losses = compute_reference_losses(
+            cfg=cfg,
+            task_names=cfg.benchmark.tasks,
+            device=device,
+        )
+        logger.info(f"✓ Reference losses computed: {reference_losses}")
 
     # Step 3: Prepare dataset configs and optionally compute task vectors
     logger.info("\n" + "=" * 80)
@@ -523,9 +551,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         preference_array = np.array(preference_vector, dtype=np.float32)
 
         # Get merged task vector (via merging or training)
-        from src.methods.base import BaseTrainingMethod
-
-        is_training_based = isinstance(method, BaseTrainingMethod)
+        is_training_based = is_training_method
 
         if is_training_based:
             # Training-based method: train new model and get task vector
@@ -553,6 +579,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 # Data-affecting parameters (change what data is seen)
                 "use_fp16",  # Mixed precision (numerical precision)
                 "max_samples_per_task",  # Data subsetting (limits training data)
+                "reference_num_samples",  # Reference split size for utopia/nadir computation
                 # TIES merging parameters
                 "k",  # Top-k fraction to keep
                 "lambda_merge",  # Merge scaling coefficient
@@ -638,6 +665,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     save_path=save_path,
                     epoch_checkpoint_dir=str(Path(cfg.paths.checkpoints_dir)),
                     model_identifier=config_hash,
+                    reference_losses=reference_losses,
                 )
             else:
                 # Should not reach here, but handle gracefully
@@ -693,6 +721,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     task,
                     model_id_param,
                     num_samples_param,
+                    split_seed_param,
                 ):
                     """Cached wrapper for prediction inference - Joblib handles caching automatically"""
                     logger.info(f"  Cache miss - running inference for {task}")
@@ -705,6 +734,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                         device=device,
                         cfg=cfg,
                         num_samples=num_samples_param,
+                        split_seed=split_seed_param,
                     )
 
                 # Create deterministic hash of task vector for cache key
@@ -721,6 +751,7 @@ def run_poc_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     task=task_name,
                     model_id_param=model_id,
                     num_samples_param=cfg.benchmark.evaluation.num_samples,
+                    split_seed_param=cfg.get("seed", 42),
                 )
 
                 # Compute metrics from cached predictions (fast step - NOT cached)

@@ -112,7 +112,7 @@ def upload_artifact(
         artifact.add_file(str(artifact_path))
 
     # Upload
-    logger.info(f"Uploading artifact to W&B...")
+    logger.info("Uploading artifact to W&B...")
     run.log_artifact(artifact)
 
     # Wait for upload to complete

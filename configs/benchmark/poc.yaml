@@ -27,6 +27,7 @@ benchmark:
   evaluation:
     batch_size: 32
     num_samples: null  # null = use full dataset, integer = limit samples
+    reference_num_samples: null  # null = use full reference split for utopia/nadir computation
     metrics:
       - name: accuracy
         plots: all                          # generate all available plot types
@@ -36,7 +37,9 @@ benchmark:
           - parallel_coordinates
           - distance_to_utopia
           - performance_recovery
+          - normalized_skill_retention
           - pareto_frontiers
+          - normalized_pareto_frontiers
       - name: f1_weighted
         plots: []                           # compute metric, no plots
       - name: f1_micro

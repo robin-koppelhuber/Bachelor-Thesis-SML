@@ -8,10 +8,11 @@ TIES merging consists of three steps:
 3. Disjoint Merge: Average parameters with the same sign, weighted by preference
 """
 
-from typing import Dict, Optional
-import torch
-import numpy as np
 import logging
+from typing import Dict, Optional
+
+import numpy as np
+import torch
 
 from src.methods.base import BaseMergingMethod
 from src.methods.registry import MethodRegistry
@@ -103,7 +104,7 @@ class TIESMerging(BaseMergingMethod):
         # Step 1: Trim - Keep only top-k parameters by magnitude
         logger.info(f"  Step 1: Trimming (k={self.k})...")
         trimmed_vectors = self._trim(stacked_vectors)
-        logger.info(f"  ✓ Trimming complete")
+        logger.info("  ✓ Trimming complete")
 
         # Free original stacked vectors to save memory
         del stacked_vectors
@@ -111,14 +112,14 @@ class TIESMerging(BaseMergingMethod):
             torch.cuda.empty_cache()
 
         # Step 2: Elect Sign - Resolve sign conflicts
-        logger.info(f"  Step 2: Electing signs...")
+        logger.info("  Step 2: Electing signs...")
         sign_vector = self._elect_sign(trimmed_vectors, preference_vector)
-        logger.info(f"  ✓ Sign election complete")
+        logger.info("  ✓ Sign election complete")
 
         # Step 3: Disjoint Merge - Average parameters with same sign
-        logger.info(f"  Step 3: Disjoint merge...")
+        logger.info("  Step 3: Disjoint merge...")
         merged_vector = self._disjoint_merge(trimmed_vectors, sign_vector, preference_vector)
-        logger.info(f"  ✓ Disjoint merge complete")
+        logger.info("  ✓ Disjoint merge complete")
 
         # Free intermediate tensors
         del trimmed_vectors, sign_vector
@@ -162,7 +163,7 @@ class TIESMerging(BaseMergingMethod):
             f"    Allocating output tensor ({task_vectors.element_size() * task_vectors.nelement() / 1024**3:.2f} GB)..."
         )
         trimmed_vectors = torch.zeros_like(task_vectors)
-        logger.info(f"    ✓ Allocation complete")
+        logger.info("    ✓ Allocation complete")
 
         for i in range(n_tasks):
             logger.info(f"    Processing task {i + 1}/{n_tasks}...")
@@ -170,7 +171,7 @@ class TIESMerging(BaseMergingMethod):
             # Memory-efficient approach: use sampling-based threshold on large CPU tensors
             # topk and quantile on large CPU tensors can cause memory issues or segfaults
             if task_vectors.device.type == "cpu" and n_params > 10_000_000:
-                logger.info(f"      Using sampling-based threshold (memory-efficient for large CPU tensors)")
+                logger.info("      Using sampling-based threshold (memory-efficient for large CPU tensors)")
                 # Get absolute values
                 abs_values = torch.abs(task_vectors[i])
 
@@ -194,7 +195,7 @@ class TIESMerging(BaseMergingMethod):
                 abs_values = torch.abs(task_vectors[i])
                 logger.info(f"      Finding top-{k_params:,} indices...")
                 _, topk_indices = torch.topk(abs_values, k=k_params, largest=True)
-                logger.info(f"      ✓ Found top-k indices")
+                logger.info("      ✓ Found top-k indices")
 
                 # Keep only top-k values (preserve original signs)
                 trimmed_vectors[i, topk_indices] = task_vectors[i, topk_indices]
@@ -212,7 +213,7 @@ class TIESMerging(BaseMergingMethod):
         Returns:
             Sign vector (-1, 0, or 1 for each parameter)
         """
-        logger.info(f"      Computing sign vector...")
+        logger.info("      Computing sign vector...")
 
         if self.sign_consensus_method == "majority":
             # Simple majority: sign of sum across tasks (memory-efficient)
@@ -264,7 +265,7 @@ class TIESMerging(BaseMergingMethod):
             del num_positive_zeros, num_negative_zeros, zero_indices
 
         del zero_mask
-        logger.info(f"      ✓ Sign vector computed")
+        logger.info("      ✓ Sign vector computed")
         return sign_vector
 
     def _disjoint_merge(
@@ -284,7 +285,7 @@ class TIESMerging(BaseMergingMethod):
         Returns:
             Merged vector
         """
-        logger.info(f"      Computing disjoint merge...")
+        logger.info("      Computing disjoint merge...")
 
         # Initialize result tensors
         numerator = torch.zeros(task_vectors.shape[1], dtype=task_vectors.dtype, device=task_vectors.device)
@@ -335,5 +336,5 @@ class TIESMerging(BaseMergingMethod):
 
         merged_vector = numerator / denominator
 
-        logger.info(f"      ✓ Disjoint merge computed")
+        logger.info("      ✓ Disjoint merge computed")
         return merged_vector

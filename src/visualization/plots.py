@@ -1040,6 +1040,212 @@ def plot_performance_recovery(
     return fig
 
 
+def plot_normalized_skill_retention(
+    all_results: List[Dict],
+    task_names: List[str],
+    metric_name: str = "accuracy",
+    save_path: Optional[Path] = None,
+    reference_points: Optional[Dict[str, Dict[str, float]]] = None,
+) -> plt.Figure:
+    """
+    Plot normalized skill retention and normalized excess risk per task.
+
+    Normalized skill retention is defined as the ratio of Cohen's kappa values:
+
+        skill_retained_i = kappa(merged, task_i) / kappa(ft_task_i, task_i)
+
+    This equals (merged_acc_i - P_e_i) / (ft_acc_i - P_e_i) where P_e_i is the
+    expected accuracy under the empirical class distribution (kappa chance correction).
+    This normalizes out both the chance-level baseline and the task difficulty ceiling,
+    making performance comparable across tasks with different numbers of classes.
+
+    Values: 1.0 = fully retains fine-tuned skill, 0.0 = performing at chance level.
+
+    The metric_name argument is used only for plot titles; cohen_kappa is always used
+    internally as it embeds the chance correction.
+
+    Args:
+        all_results: List of result dictionaries with preference_vector and task_results
+        task_names: List of task names
+        metric_name: Metric context name for plot title (cohen_kappa used internally)
+        save_path: Optional path to save figure
+        reference_points: Single-task fine-tuned model performance (required, must include
+                          cohen_kappa keys, e.g. reference_points["ag_news"]["ag_news_cohen_kappa"])
+
+    Returns:
+        Matplotlib figure
+    """
+    if not reference_points:
+        raise ValueError("reference_points required for normalized skill retention analysis")
+
+    sample_metrics = all_results[0]["task_results"][task_names[0]].metrics
+    if "cohen_kappa" not in sample_metrics:
+        raise ValueError(
+            "cohen_kappa metric not found in task results. "
+            "Add 'cohen_kappa' to the benchmark metrics config to use normalized_skill_retention."
+        )
+
+    ft_kappas = {task: reference_points[task][f"{task}_cohen_kappa"] for task in task_names}
+
+    formatted_task_names = [format_task_name(name) for name in task_names]
+    formatted_metric = format_metric_name(metric_name)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))
+
+    num_tasks = len(task_names)
+    num_prefs = len(all_results)
+    bar_spacing = min(0.12, 0.8 / (num_prefs + 1))
+
+    def categorize_preference(pref_vec):
+        max_val = max(pref_vec)
+        if len(set(pref_vec)) == 1:
+            return "#2ca02c"
+        elif max_val >= 0.7:
+            return "#d62728"
+        else:
+            return "#1f77b4"
+
+    for pref_idx, result in enumerate(all_results):
+        pref_vec = result["preference_vector"]
+        task_results = result["task_results"]
+        pref_label = f"[{', '.join([f'{x:.1f}' for x in pref_vec])}]"
+        color = categorize_preference(pref_vec)
+
+        x_positions = np.arange(num_tasks) + pref_idx * bar_spacing
+        width = bar_spacing * 0.8
+
+        skill_retained_vals = []
+        for task in task_names:
+            merged_kappa = task_results[task].metrics["cohen_kappa"]
+            ft_kappa = ft_kappas[task]
+            skill_retained = merged_kappa / ft_kappa if ft_kappa > 0 else 0.0
+            skill_retained_vals.append(skill_retained)
+
+        # Left plot: skill retained (0 = chance level, 1 = fine-tuned level)
+        bars1 = ax1.bar(
+            x_positions,
+            skill_retained_vals,
+            width * 1.6,
+            alpha=0.8,
+            color=color,
+            edgecolor="black",
+            linewidth=1,
+            label=pref_label if pref_idx < 7 else None,
+        )
+        for bar, val in zip(bars1, skill_retained_vals):
+            if val >= 0.9:
+                bar.set_facecolor("#2ecc71")
+            elif val >= 0.7:
+                bar.set_facecolor("#f39c12")
+            else:
+                bar.set_facecolor("#e74c3c")
+            bar.set_alpha(0.8)
+
+        # Right plot: normalized excess risk = 1 - skill_retained
+        excess_risk_vals = [1.0 - s for s in skill_retained_vals]
+        bars2 = ax2.bar(
+            x_positions,
+            excess_risk_vals,
+            width * 1.6,
+            alpha=0.8,
+            color=color,
+            edgecolor="black",
+            linewidth=1,
+            label=pref_label if pref_idx < 7 else None,
+        )
+        for bar, val in zip(bars2, excess_risk_vals):
+            if val <= 0.1:
+                bar.set_facecolor("#2ecc71")
+            elif val <= 0.3:
+                bar.set_facecolor("#f39c12")
+            else:
+                bar.set_facecolor("#e74c3c")
+            bar.set_alpha(0.8)
+
+    center_offset = (num_prefs - 1) * bar_spacing / 2
+    x_lim = (-0.2, num_tasks - 1 + (num_prefs - 1) * bar_spacing + 0.2)
+
+    # Left axis: skill retained
+    ax1.axhline(y=1.0, color="black", linestyle="--", linewidth=1.5, alpha=0.7, label="Fine-tuned level")
+    ax1.axhline(y=0.9, color="gray", linestyle=":", linewidth=1, alpha=0.5)
+    ax1.set_xticks(np.arange(num_tasks) + center_offset)
+    ax1.set_xticklabels(formatted_task_names, fontsize=11, fontweight="bold")
+    ax1.set_ylabel("Skill Retained  (κ_merged / κ_fine-tuned)", fontsize=12, fontweight="bold")
+    ax1.set_xlabel("Task", fontsize=12, fontweight="bold")
+    ax1.set_title(
+        f"Normalized Skill Retention\n(Cohen's κ ratio — {formatted_metric})",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax1.set_ylim(0, 1.1)
+    ax1.set_xlim(*x_lim)
+    ax1.grid(axis="y", alpha=0.3, linestyle="--")
+    ax1.text(
+        0.02,
+        0.98,
+        "1.0 = fully retains fine-tuned skill\n0.0 = performs at chance level",
+        transform=ax1.transAxes,
+        fontsize=8,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.6),
+    )
+
+    from matplotlib.patches import Patch
+
+    ax1.legend(
+        handles=[
+            Patch(facecolor="#2ecc71", alpha=0.8, edgecolor="black", label="≥ 0.9: High retention"),
+            Patch(facecolor="#f39c12", alpha=0.8, edgecolor="black", label="0.7–0.9: Moderate"),
+            Patch(facecolor="#e74c3c", alpha=0.8, edgecolor="black", label="< 0.7: Low retention"),
+        ],
+        loc="lower right",
+        fontsize=9,
+        framealpha=0.9,
+    )
+
+    # Right axis: normalized excess risk
+    ax2.axhline(y=0.0, color="black", linestyle="--", linewidth=1.5, alpha=0.7)
+    ax2.axhline(y=0.1, color="gray", linestyle=":", linewidth=1, alpha=0.5)
+    ax2.set_xticks(np.arange(num_tasks) + center_offset)
+    ax2.set_xticklabels(formatted_task_names, fontsize=11, fontweight="bold")
+    ax2.set_ylabel("Normalized Excess Risk  (1 − κ_merged / κ_fine-tuned)", fontsize=12, fontweight="bold")
+    ax2.set_xlabel("Task", fontsize=12, fontweight="bold")
+    ax2.set_title(
+        f"Normalized Excess Risk\n(Fraction of skill lost by merging — {formatted_metric})",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax2.set_ylim(0, 1.0)
+    ax2.set_xlim(*x_lim)
+    ax2.grid(axis="y", alpha=0.3, linestyle="--")
+    ax2.text(
+        0.02,
+        0.98,
+        "0.0 = no skill lost\n1.0 = all skill lost (chance-level performance)",
+        transform=ax2.transAxes,
+        fontsize=8,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.6),
+    )
+    ax2.legend(
+        handles=[
+            Patch(facecolor="#2ecc71", alpha=0.8, edgecolor="black", label="≤ 0.1: Negligible loss"),
+            Patch(facecolor="#f39c12", alpha=0.8, edgecolor="black", label="0.1–0.3: Moderate loss"),
+            Patch(facecolor="#e74c3c", alpha=0.8, edgecolor="black", label="> 0.3: High loss"),
+        ],
+        loc="upper right",
+        fontsize=9,
+        framealpha=0.9,
+    )
+
+    plt.tight_layout()
+
+    if save_path:
+        save_plot(fig, save_path)
+
+    return fig
+
+
 def plot_method_comparison_dashboard(
     method_results: Dict[str, Dict[str, Dict[str, float]]],
     task_names: List[str],

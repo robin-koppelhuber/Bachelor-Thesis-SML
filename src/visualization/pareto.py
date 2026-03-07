@@ -49,6 +49,8 @@ def plot_pareto_frontier_2d(
     save_path: Optional[Path] = None,
     title: Optional[str] = None,
     single_task_optima: Optional[Dict[str, Tuple[float, float]]] = None,
+    x_label: Optional[str] = None,
+    y_label: Optional[str] = None,
 ) -> plt.Figure:
     """
     Plot 2D Pareto frontier with reference points and hypervolume visualization
@@ -294,8 +296,8 @@ def plot_pareto_frontier_2d(
     formatted_task1 = format_task_name(task_names[0])
     formatted_task2 = format_task_name(task_names[1])
 
-    ax.set_xlabel(f"{formatted_task1} Performance", fontsize=12, fontweight="bold")
-    ax.set_ylabel(f"{formatted_task2} Performance", fontsize=12, fontweight="bold")
+    ax.set_xlabel(x_label if x_label else f"{formatted_task1} Performance", fontsize=12, fontweight="bold")
+    ax.set_ylabel(y_label if y_label else f"{formatted_task2} Performance", fontsize=12, fontweight="bold")
 
     if title:
         ax.set_title(title, fontsize=14, fontweight="bold")
@@ -333,6 +335,70 @@ def plot_pareto_frontier_2d(
         save_plot(fig, save_path)
 
     return fig
+
+
+def plot_normalized_pareto_frontier_2d(
+    results: Dict[str, Tuple[float, float]],
+    task_names: Tuple[str, str],
+    diagonal_kappas: Dict[str, float],
+    save_path: Optional[Path] = None,
+    title: Optional[str] = None,
+    single_task_optima: Optional[Dict[str, Tuple[float, float]]] = None,
+) -> plt.Figure:
+    """
+    Plot 2D Pareto frontier in normalized skill retention space (kappa ratio axes).
+
+    Each point is transformed from (score_task1, score_task2) to:
+        (kappa_merged_task1 / kappa_ft_task1, kappa_merged_task2 / kappa_ft_task2)
+
+    This places all task pairs on a common [0, 1] x [0, 1] scale where 1.0 means
+    the merged model fully retains the fine-tuned model's above-chance skill. The
+    utopia point in this space is always (1.0, 1.0).
+
+    Args:
+        results: Dict mapping config names to (kappa_task1, kappa_task2) — already kappa values
+        task_names: Names of the two tasks (for axis labels)
+        diagonal_kappas: Dict mapping task name to its fine-tuned model's own-task kappa
+                         (denominator for normalization), e.g. {"ag_news": 0.92, "imdb": 0.87}
+        save_path: Optional path to save figure
+        title: Optional title
+        single_task_optima: Optional dict mapping source task name to (kappa_task1, kappa_task2)
+                            — these are the kappa values of the fine-tuned source-task model
+                              evaluated on both tasks
+
+    Returns:
+        Matplotlib figure
+    """
+    task1, task2 = task_names
+    ft_kappa1 = diagonal_kappas[task1]
+    ft_kappa2 = diagonal_kappas[task2]
+
+    # Normalize merged model results to kappa ratios
+    normalized_results = {
+        name: (s1 / ft_kappa1 if ft_kappa1 > 0 else 0.0, s2 / ft_kappa2 if ft_kappa2 > 0 else 0.0)
+        for name, (s1, s2) in results.items()
+    }
+
+    # Normalize single-task optima to kappa ratios
+    normalized_optima = None
+    if single_task_optima:
+        normalized_optima = {
+            name: (s1 / ft_kappa1 if ft_kappa1 > 0 else 0.0, s2 / ft_kappa2 if ft_kappa2 > 0 else 0.0)
+            for name, (s1, s2) in single_task_optima.items()
+        }
+
+    formatted_task1 = format_task_name(task1)
+    formatted_task2 = format_task_name(task2)
+
+    return plot_pareto_frontier_2d(
+        results=normalized_results,
+        task_names=task_names,
+        save_path=save_path,
+        title=title or f"Normalized Pareto Frontier: {formatted_task1} vs {formatted_task2}",
+        single_task_optima=normalized_optima,
+        x_label=f"Skill Retained: {formatted_task1}  (κ_merged / κ_fine-tuned)",
+        y_label=f"Skill Retained: {formatted_task2}  (κ_merged / κ_fine-tuned)",
+    )
 
 
 def _compute_hypervolume_2d(pareto_points: np.ndarray, reference_point: np.ndarray) -> float:

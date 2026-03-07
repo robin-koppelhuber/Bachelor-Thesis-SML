@@ -574,6 +574,7 @@ class BaseTrainingMethod(ABC):
         save_path: Optional[str] = None,
         epoch_checkpoint_dir: Optional[str] = None,
         model_identifier: Optional[str] = None,
+        reference_losses: Optional[Dict] = None,
     ) -> torch.Tensor:
         """
         Train model using multi-task learning and return task vector
@@ -597,6 +598,9 @@ class BaseTrainingMethod(ABC):
             save_path: Optional path to save the trained model
             epoch_checkpoint_dir: Optional directory for epoch-level checkpoints (for resumption)
             model_identifier: Optional unique identifier for this training run (for checkpoint naming)
+            reference_losses: Optional dict mapping task name to {"utopia": float, "nadir": float}.
+                              When provided, passed to _get_training_kwargs() so subclasses can use
+                              precomputed reference losses (e.g. Chebyshev) instead of recomputing them.
 
         Returns:
             Task vector (flattened 1D tensor): fine_tuned_params - base_params
@@ -672,9 +676,13 @@ class BaseTrainingMethod(ABC):
         # 4. Setup optimizer and scheduler
         optimizer, scheduler = self._setup_optimizer(model, train_dataloaders)
 
-        # 5. Get method-specific training parameters (pass finetuned model cache for utopia point computation)
+        # 5. Get method-specific training parameters
         training_kwargs = self._get_training_kwargs(
-            task_names, preference_vector, dataset_configs, cache_dir=finetuned_model_cache_dir
+            task_names,
+            preference_vector,
+            dataset_configs,
+            cache_dir=finetuned_model_cache_dir,
+            reference_losses=reference_losses,
         )
 
         # 6. Setup mixed precision training if enabled
@@ -1080,6 +1088,7 @@ class BaseTrainingMethod(ABC):
         preference_vector: np.ndarray,
         dataset_configs: Dict,
         cache_dir: Optional[str] = None,
+        reference_losses: Optional[Dict] = None,
     ) -> Dict:
         """
         Get method-specific kwargs to pass to training loop
@@ -1092,6 +1101,8 @@ class BaseTrainingMethod(ABC):
             preference_vector: Preference weights
             dataset_configs: Dataset configurations
             cache_dir: Optional cache directory for loading models
+            reference_losses: Optional precomputed reference losses from benchmark runner.
+                              Maps task name to {"utopia": float, "nadir": float}.
 
         Returns:
             Dictionary of kwargs for _train_epoch
