@@ -39,11 +39,16 @@ def main():
         help="Download all datasets declared in config (covers all benchmarks). "
         "Default: only the datasets used by the selected benchmark.",
     )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Hydra overrides, e.g. cluster=euler",
+    )
     args = parser.parse_args()
 
     # Load Hydra config
     with initialize(version_base=None, config_path="../configs"):
-        cfg: DictConfig = compose(config_name="config")
+        cfg: DictConfig = compose(config_name="config", overrides=args.overrides)
 
     # Use configured HuggingFace cache directory
     cache_dir = Path(cfg.paths.hf_datasets_cache)

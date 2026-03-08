@@ -60,13 +60,13 @@ fi
 # ---- 4. Download datasets ----
 echo ""
 echo "[3/4] Downloading all datasets..."
-uv run python scripts/setup_data.py --all-benchmarks
+uv run python scripts/setup_data.py --all-benchmarks cluster=euler
 echo "      Done."
 
 # ---- 5. Download models ----
 echo ""
 echo "[4/4] Downloading all fine-tuned models..."
-uv run python scripts/setup_models.py --all-benchmarks
+uv run python scripts/setup_models.py --all-benchmarks cluster=euler
 echo "      Done."
 
 echo ""

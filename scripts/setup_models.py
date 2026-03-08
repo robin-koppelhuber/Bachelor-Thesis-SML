@@ -22,11 +22,16 @@ def main():
         help="Download all fine-tuned models declared in config (covers all benchmarks). "
         "Default: only models used by the selected benchmark.",
     )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Hydra overrides, e.g. cluster=euler",
+    )
     args = parser.parse_args()
 
     # Load Hydra config
     with initialize(version_base=None, config_path="../configs"):
-        cfg: DictConfig = compose(config_name="config")
+        cfg: DictConfig = compose(config_name="config", overrides=args.overrides)
 
     # Use configured HuggingFace cache directories
     cache_dir_base = Path(cfg.paths.hf_models_cache_base)
