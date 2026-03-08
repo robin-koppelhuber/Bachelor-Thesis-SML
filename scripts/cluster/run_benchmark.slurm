@@ -53,8 +53,16 @@ echo "======================================================"
 # PyTorch cu128 wheels bundle their own CUDA runtime — no module load needed.
 # Only the GPU driver on the compute node is required (always present on Euler).
 
-# uv cache: $HOME may be unset on compute nodes; point explicitly to $SCRATCH.
+# Euler standard paths — derive from $USER if the env vars were stripped by --export.
+# These must be exported so Hydra's ${oc.env:SCRATCH} resolver can read them.
+export SCRATCH="${SCRATCH:-/cluster/scratch/${USER}}"
+export HOME="${HOME:-/cluster/home/${USER}}"
+
+# uv cache: point explicitly to $SCRATCH so it is always writable.
 export UV_CACHE_DIR="${SCRATCH}/.cache/uv"
+
+# Flush Python stdout/stderr immediately (no buffering in non-interactive mode).
+export PYTHONUNBUFFERED=1
 
 # Compute nodes have no internet — use local HuggingFace cache only.
 export HF_HUB_OFFLINE=1
