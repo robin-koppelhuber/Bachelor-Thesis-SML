@@ -304,21 +304,24 @@ class BaseTrainingMethod(ABC):
         )
 
         # Calculate total training steps (handle streaming dataloaders)
+        # Use max across tasks: shorter datasets will cycle, longer datasets run fully.
+        # This is the standard multi-task training convention and avoids discarding
+        # the majority of data from large datasets (e.g. QNLI) due to small ones (MRPC).
         try:
-            min_steps_per_epoch = min(len(dl) for dl in train_dataloaders.values())
+            steps_per_epoch = max(len(dl) for dl in train_dataloaders.values())
         except TypeError:
             # Streaming dataloaders don't support len()
             if self.max_samples_per_task is not None:
-                min_steps_per_epoch = self.max_samples_per_task // self.batch_size
+                steps_per_epoch = self.max_samples_per_task // self.batch_size
             else:
                 # Default to a reasonable number for streaming
-                min_steps_per_epoch = 10000 // self.batch_size
-            logger.info(f"  Streaming mode detected: estimating {min_steps_per_epoch} steps per epoch")
+                steps_per_epoch = 10000 // self.batch_size
+            logger.info(f"  Streaming mode detected: estimating {steps_per_epoch} steps per epoch")
 
-        total_steps = self.num_epochs * min_steps_per_epoch
+        total_steps = self.num_epochs * steps_per_epoch
 
         logger.info("\nOptimizer setup:")
-        logger.info(f"  Steps per epoch: {min_steps_per_epoch}")
+        logger.info(f"  Steps per epoch: {steps_per_epoch}")
         logger.info(f"  Total steps: {total_steps}")
         logger.info(f"  Warmup steps: {self.warmup_steps}")
 
@@ -394,25 +397,28 @@ class BaseTrainingMethod(ABC):
         # Create iterators for each task
         task_iterators = {name: iter(dataloader) for name, dataloader in task_dataloaders.items()}
 
-        # Determine number of steps (use minimum dataloader length)
-        # For streaming datasets, we need to handle them differently
+        # Determine number of steps per epoch.
+        # Use max across tasks: shorter datasets cycle (already handled by the
+        # StopIteration restart below), longer datasets run to completion.
+        # This prevents large datasets (e.g. QNLI) from being bottlenecked by
+        # small ones (e.g. MRPC) and discarding 95%+ of their data per epoch.
         try:
-            min_steps = min(len(dl) for dl in task_dataloaders.values())
+            steps_per_epoch = max(len(dl) for dl in task_dataloaders.values())
         except TypeError:
             # Streaming datasets don't support len()
             # Use a reasonable default or calculate from max_samples_per_task
             if self.max_samples_per_task is not None:
-                min_steps = self.max_samples_per_task // self.batch_size
+                steps_per_epoch = self.max_samples_per_task // self.batch_size
             else:
                 # Default to a reasonable number for streaming
-                min_steps = 10000 // self.batch_size
-            logger.info(f"  Streaming mode: using {min_steps} steps per epoch")
+                steps_per_epoch = 10000 // self.batch_size
+            logger.info(f"  Streaming mode: using {steps_per_epoch} steps per epoch")
 
         logger.info(f"\nEpoch {epoch + 1}/{self.num_epochs}")
-        logger.info(f"  Training steps: {min_steps}")
+        logger.info(f"  Training steps: {steps_per_epoch}")
 
         step = 0
-        while step < min_steps:
+        while step < steps_per_epoch:
             # Get batch from each task and compute losses
             task_losses = []
 
@@ -529,9 +535,9 @@ class BaseTrainingMethod(ABC):
             num_steps += 1
 
             # Periodic logging (before incrementing step to get correct count)
-            if (step + 1) % 100 == 0 or step == min_steps - 1:
+            if (step + 1) % 100 == 0 or step == steps_per_epoch - 1:
                 logger.info(
-                    f"  Step {step + 1}/{min_steps} - Loss: {multi_task_loss.item():.4f} - Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
+                    f"  Step {step + 1}/{steps_per_epoch} - Loss: {multi_task_loss.item():.4f} - Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
                 )
 
                 # Log to W&B every 100 steps
@@ -550,7 +556,7 @@ class BaseTrainingMethod(ABC):
                             log_dict[f"{prefix}/task_loss/{task_name}"] = task_loss.item()
 
                         # Calculate global step (step is 0-indexed, so add 1 for display)
-                        global_step = epoch * min_steps + step + 1
+                        global_step = epoch * steps_per_epoch + step + 1
                         wandb.log(log_dict, step=global_step)
                         logger.debug(f"Logged to W&B: step={global_step}, metrics={list(log_dict.keys())}")
                 except (ImportError, AttributeError) as e:

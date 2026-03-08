@@ -1,0 +1,26 @@
+# @package _global_
+# Recovery ablation: hyperparameters matched to textattack single-task fine-tuning.
+# CoLA: lr=2e-5, batch=32, epochs=5 (source: HF model card)
+# MRPC: lr=3e-5, batch=16, epochs=5 (source: HF model card) — using 2e-5/32 as unified setting
+# QNLI/SST-2: no public card — using same unified setting
+method:
+  name: epo
+  params:
+    learning_rate: 2e-5
+    num_epochs: 5
+    batch_size: 32
+    gradient_accumulation_steps: 1
+    warmup_steps: 0        # textattack does not specify; use 0 for clean comparison
+    weight_decay: 0.0      # textattack does not specify; use 0 for clean comparison
+    normalize_gradients: true
+    cpu_gradient_offload: true
+    invert_preference: false
+    pref_eps: 1.0e-3
+    max_grad_norm: 1.0
+    use_fp16: false
+    use_torch_compile: false
+    dataloader_num_workers: 0
+    save_epoch_checkpoints: true
+    auto_resume: true
+    keep_all_epoch_checkpoints: false
+    max_samples_per_task: null

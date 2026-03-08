@@ -1,0 +1,28 @@
+# @package _global_
+benchmark:
+  name: recovery_qnli
+  description: "Single-task recovery ablation: QNLI only. Verifies Chebyshev/EPO can match textattack fine-tuned quality."
+
+  tasks:
+    - qnli
+
+  preference_vectors:
+    - [1.0]
+
+  evaluation:
+    batch_size: 32
+    num_samples: null
+    reference_num_samples: null
+    metrics:
+      - name: accuracy
+        plots: []
+      - name: cohen_kappa
+        plots: []
+      - name: mcc
+        plots: []
+    cross_metric_plots: []
+
+  mode: train_eval
+  cache_enabled: true
+  force_retrain: false
+  clear_cache: false

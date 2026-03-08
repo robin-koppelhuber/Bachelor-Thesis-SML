@@ -142,9 +142,7 @@ class EPO_LP:
     # Private solvers
     # ------------------------------------------------------------------
 
-    def _solve_epo_lp(
-        self, preference: np.ndarray, G: np.ndarray
-    ):
+    def _solve_epo_lp(self, preference: np.ndarray, G: np.ndarray):
         """
         Maximise t s.t. (G α)_i / r_i ≥ t, α ≥ 0, Σα = 1.
 
@@ -164,7 +162,7 @@ class EPO_LP:
         # (G α)_i = Σ_j G[i,j] α_j  →  coefficient of α_j in row i = G[i,j]
         A_ub = np.zeros((T, T + 1))
         A_ub[:, :T] = -G / r[:, None]  # -G[i,j] / r_i
-        A_ub[:, T] = 1.0               # +1 for t
+        A_ub[:, T] = 1.0  # +1 for t
         b_ub = np.zeros(T)
 
         # Equality: Σα = 1  (t is unconstrained)
@@ -176,8 +174,13 @@ class EPO_LP:
         bounds = [(0.0, 1.0)] * T + [(None, None)]
 
         result = linprog(
-            c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
-            bounds=bounds, method="highs",
+            c,
+            A_ub=A_ub,
+            b_ub=b_ub,
+            A_eq=A_eq,
+            b_eq=b_eq,
+            bounds=bounds,
+            method="highs",
         )
 
         if not result.success:
@@ -202,8 +205,8 @@ class EPO_LP:
         alpha = np.ones(T) / T
 
         for _ in range(200):
-            grad = 2.0 * G @ alpha          # gradient of α^T G α
-            i_min = int(np.argmin(grad))    # FW direction: e_{i_min}
+            grad = 2.0 * G @ alpha  # gradient of α^T G α
+            i_min = int(np.argmin(grad))  # FW direction: e_{i_min}
             s = np.zeros(T)
             s[i_min] = 1.0
             d = s - alpha
@@ -319,12 +322,8 @@ class EPOFineTuning(BaseTrainingMethod):
         or to unnormalised losses (legacy).
         """
         if reference_losses is not None:
-            utopia = torch.tensor(
-                [reference_losses[t]["utopia"] for t in task_names], dtype=torch.float32
-            )
-            nadir = torch.tensor(
-                [reference_losses[t]["nadir"] for t in task_names], dtype=torch.float32
-            )
+            utopia = torch.tensor([reference_losses[t]["utopia"] for t in task_names], dtype=torch.float32)
+            nadir = torch.tensor([reference_losses[t]["nadir"] for t in task_names], dtype=torch.float32)
             logger.info(f"EPO utopia losses (from reference): {utopia.tolist()}")
             logger.info(f"EPO nadir  losses (from reference): {nadir.tolist()}")
             return {"utopia_point": utopia, "nadir_point": nadir}
@@ -395,19 +394,18 @@ class EPOFineTuning(BaseTrainingMethod):
         r = r / r.sum()
 
         # Create iterators for each task
-        task_iterators = {
-            name: iter(dl) for name, dl in task_dataloaders.items()
-        }
+        task_iterators = {name: iter(dl) for name, dl in task_dataloaders.items()}
 
         # Number of steps = length of shortest dataloader
+        # Use max across tasks: shorter datasets cycle, longer datasets run fully.
         try:
-            min_steps = min(len(dl) for dl in task_dataloaders.values())
+            steps_per_epoch = max(len(dl) for dl in task_dataloaders.values())
         except TypeError:
-            min_steps = (self.max_samples_per_task or 10000) // self.batch_size
+            steps_per_epoch = (self.max_samples_per_task or 10000) // self.batch_size
 
-        logger.info(f"\nEpoch {epoch + 1}/{self.num_epochs}  —  EPO training steps: {min_steps}")
+        logger.info(f"\nEpoch {epoch + 1}/{self.num_epochs}  —  EPO training steps: {steps_per_epoch}")
 
-        for step in range(min_steps):
+        for step in range(steps_per_epoch):
             # ----------------------------------------------------------------
             # 1. Fetch one batch per task
             # ----------------------------------------------------------------
@@ -450,6 +448,7 @@ class EPOFineTuning(BaseTrainingMethod):
                 # GradScaler is not used (see backward comment below).
                 if self.use_fp16 and torch.cuda.is_available():
                     from torch.amp import autocast
+
                     ctx = autocast("cuda")
                 else:
                     ctx = nullcontext()
@@ -471,11 +470,9 @@ class EPOFineTuning(BaseTrainingMethod):
                 task_losses_scalar.append(loss.item())
 
                 # Collect gradient: CPU float32, flat vector
-                grad_flat = torch.cat([
-                    p.grad.detach().cpu().float().flatten()
-                    for p in model.parameters()
-                    if p.grad is not None
-                ])
+                grad_flat = torch.cat(
+                    [p.grad.detach().cpu().float().flatten() for p in model.parameters() if p.grad is not None]
+                )
                 task_grads_cpu.append(grad_flat)
                 optimizer.zero_grad(set_to_none=True)
 
@@ -521,11 +518,7 @@ class EPOFineTuning(BaseTrainingMethod):
             for p in model.parameters():
                 numel = p.numel()
                 if p.requires_grad:
-                    p.grad = (
-                        combined_grad_cpu[idx : idx + numel]
-                        .reshape(p.shape)
-                        .to(p.device)
-                    )
+                    p.grad = combined_grad_cpu[idx : idx + numel].reshape(p.shape).to(p.device)
                 idx += numel
 
             # ----------------------------------------------------------------
@@ -550,9 +543,9 @@ class EPOFineTuning(BaseTrainingMethod):
             num_steps += 1
 
             # Periodic logging
-            if (step + 1) % 100 == 0 or step == min_steps - 1:
+            if (step + 1) % 100 == 0 or step == steps_per_epoch - 1:
                 logger.info(
-                    f"  Step {step + 1}/{min_steps} — "
+                    f"  Step {step + 1}/{steps_per_epoch} — "
                     f"Loss: {step_loss:.4f} — "
                     f"Task losses: {[f'{l:.4f}' for l in task_losses_scalar]} — "
                     f"alpha: {[f'{a:.3f}' for a in alpha]}"
@@ -563,7 +556,7 @@ class EPOFineTuning(BaseTrainingMethod):
 
                     if wandb.run:
                         prefix = wandb_prefix or "train"
-                        global_step = epoch * min_steps + step + 1
+                        global_step = epoch * steps_per_epoch + step + 1
                         log_dict = {f"{prefix}/step_loss": step_loss}
                         for tname, tl, ta in zip(task_names, task_losses_scalar, alpha):
                             log_dict[f"{prefix}/task_loss/{tname}"] = tl
