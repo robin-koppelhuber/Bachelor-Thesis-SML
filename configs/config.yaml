@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - benchmark: poc
+  - benchmark: glue_2_label
   - model: roberta_base
   - method: ties
   - dataset@datasets.ag_news: ag_news

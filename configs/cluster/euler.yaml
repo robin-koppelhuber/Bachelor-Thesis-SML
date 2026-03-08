@@ -1,0 +1,25 @@
+# @package _global_
+# Euler cluster configuration — overrides paths to use $SCRATCH
+# Usage: uv run python main.py cluster=euler benchmark=<name> method=<name>
+#
+# Requires $SCRATCH to be set (automatically on Euler login/compute nodes).
+# All large data lives in $SCRATCH/bachelor-thesis-sml/ to avoid quota issues
+# in $HOME.
+
+paths:
+  data_dir: ${oc.env:SCRATCH}/bachelor-thesis-sml/data
+  hf_datasets_cache: ${paths.data_dir}/raw
+  hf_models_cache_base: ${oc.env:SCRATCH}/bachelor-thesis-sml/checkpoints/base
+  hf_models_cache_finetuned: ${oc.env:SCRATCH}/bachelor-thesis-sml/checkpoints/finetuned
+  trained_models_cache: ${oc.env:SCRATCH}/bachelor-thesis-sml/checkpoints/trained
+  evaluation_cache: ${oc.env:SCRATCH}/bachelor-thesis-sml/checkpoints/eval_cache
+
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH}/bachelor-thesis-sml/outputs/${benchmark.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${oc.env:SCRATCH}/bachelor-thesis-sml/outputs/${benchmark.name}/sweeps
+    subdir: ${hydra.job.num}
+
+wandb:
+  mode: online

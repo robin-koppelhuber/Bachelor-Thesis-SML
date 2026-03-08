@@ -13,6 +13,7 @@ Note on Windows Temp File Issues:
     when W&B encounters these temporary file issues.
 """
 
+import io
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,15 +27,18 @@ logger = logging.getLogger(__name__)
 def log_figures_to_wandb(
     figures: Dict[str, plt.Figure],
     step: Optional[int] = None,
+    dpi: int = 300,
 ) -> None:
     """
-    Log matplotlib figures to W&B
-    Uses wand.Image, which converts images to .png and uses lossy compression
-    For full quality extract visualizations from SLURM directly
+    Log matplotlib figures to W&B at high resolution.
+
+    Renders each figure into an in-memory PNG buffer at `dpi` (default 300),
+    matching the on-disk save quality, before passing to wandb.Image.
 
     Args:
         figures: Dictionary mapping figure names to matplotlib figures
         step: Optional step number for logging
+        dpi: Resolution for rendering (default 300 matches plots.py savefig DPI)
 
     Requires:
         wandb must be imported and initialized before calling this function
@@ -48,11 +52,14 @@ def log_figures_to_wandb(
 
         log_dict = {}
         for name, fig in figures.items():
-            log_dict[f"viz/{name}"] = wandb.Image(fig)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+            buf.seek(0)
+            log_dict[f"viz/{name}"] = wandb.Image(buf)
             plt.close(fig)  # Close figure to free memory
 
         wandb.log(log_dict, step=step)
-        logger.info(f"Logged {len(figures)} figures to W&B")
+        logger.info(f"Logged {len(figures)} figures to W&B at {dpi} DPI")
 
     except ImportError:
         logger.warning("wandb not installed, skipping figure logging")
