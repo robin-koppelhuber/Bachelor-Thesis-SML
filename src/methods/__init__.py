@@ -8,9 +8,11 @@ This module imports all merging methods to ensure they are registered.
 from src.methods.averaging import AveragingMerging  # noqa: F401
 from src.methods.base import BaseMergingMethod, BaseTrainingMethod  # noqa: F401
 from src.methods.chebyshev_ft import ChebyshevFineTuning  # noqa: F401
+from src.methods.epo_search import EPOFineTuning  # noqa: F401
 
 # Registry will be imported from base module
 from src.methods.registry import MethodRegistry  # noqa: F401
+from src.methods.self_position import SelfPositionSearch  # noqa: F401
 from src.methods.ties import TIESMerging  # noqa: F401
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "AveragingMerging",
     "TIESMerging",
     "ChebyshevFineTuning",
+    "EPOFineTuning",
+    "SelfPositionSearch",
 ]

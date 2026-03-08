@@ -1,0 +1,8 @@
+# @package _global_
+method:
+  name: averaging
+  class_path: src.methods.averaging.AveragingMerging
+  description: "Weighted averaging of task vectors (data-free baseline)"
+
+  params:
+    normalize_preferences: true

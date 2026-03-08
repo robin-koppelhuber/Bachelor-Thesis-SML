@@ -3,25 +3,26 @@ benchmark:
   name: glue_2_label
   description: "Subset of 2 label datasets from the GLUE dataset"
 
-  # Tasks to evaluate (order matches preference vector indices)
+  # Tasks to evaluate (MUST be in alphabetical order — all methods use sorted(task_names) internally)
   tasks:
     - cola
-    - qnli
     - mrpc
+    - qnli
     - sst2
 
-  # Preference vectors to test (must sum to 1.0 and match task count)
+  # Preference vectors to test (must sum to 1.0; indices match SORTED task order above)
+  # Index mapping: 0=cola, 1=mrpc, 2=qnli, 3=sst2
   preference_vectors:
     # Equal preference
     - [0.25, 0.25, 0.25, 0.25]
     # Focus on each task individually
-    - [0.7, 0.1, 0.1, 0.1]
-    - [0.1, 0.7, 0.1, 0.1]
-    - [0.1, 0.1, 0.7, 0.1]
-    - [0.1, 0.1, 0.1, 0.7]
+    - [0.7, 0.1, 0.1, 0.1]   # cola
+    - [0.1, 0.1, 0.7, 0.1]   # qnli
+    - [0.1, 0.7, 0.1, 0.1]   # mrpc
+    - [0.1, 0.1, 0.1, 0.7]   # sst2
     # Balanced pairs
-    - [0.4, 0.4, 0.1, 0.1]
-    - [0.1, 0.1, 0.4, 0.4]
+    - [0.4, 0.1, 0.4, 0.1]   # cola + qnli
+    - [0.1, 0.4, 0.1, 0.4]   # mrpc + sst2
 
   # Evaluation settings
   evaluation:

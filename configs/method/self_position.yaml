@@ -1,0 +1,31 @@
+# @package _global_
+method:
+  name: self_position
+  params:
+    # Adam LR on mixing logits β (matches paper arXiv:2410.15035)
+    lr_alpha: 5.0e-3
+
+    # Training settings
+    num_epochs: 10           # More epochs: β has T params, not millions
+    batch_size: 32
+
+    # TIES preprocessing (optional): apply trim + global sign + disjoint mask
+    # to task vectors before optimization. All steps are α-independent.
+    ties_preprocessing: false
+    ties_k: 0.2              # Top-k fraction to keep during trimming
+
+    # Preference convention: false = high r_k means more important task k
+    invert_preference: false
+
+    # Mixed precision: autocast for forward (memory), unscaled backward (correctness)
+    use_fp16: true
+
+    # Model optimizer settings (created by base class but never stepped)
+    learning_rate: 1.0e-5    # Unused (model params are never gradient-updated)
+    weight_decay: 0.0
+    max_grad_norm: 0.0
+    gradient_accumulation_steps: 1
+
+    # Disable torch.compile (Self Position reconstructs params in-place each step;
+    # compile does not help and may conflict with dynamic param assignment)
+    use_torch_compile: false
