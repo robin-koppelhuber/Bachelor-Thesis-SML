@@ -310,8 +310,8 @@ def plot_pareto_frontier_2d(
 
     ax.legend(loc="best", fontsize=10, framealpha=0.9)
     ax.grid(alpha=0.3, linestyle="--")
-    ax.set_xlim(max(0, nadir_point[0] - 0.05), min(1.0, utopia_point[0] + 0.05))
-    ax.set_ylim(max(0, nadir_point[1] - 0.05), min(1.0, utopia_point[1] + 0.05))
+    ax.set_xlim(nadir_point[0] - 0.05, min(1.0, utopia_point[0] + 0.05))
+    ax.set_ylim(nadir_point[1] - 0.05, min(1.0, utopia_point[1] + 0.05))
 
     # Add text box with statistics
     hypervolume = _compute_hypervolume_2d(pareto_points, nadir_point)

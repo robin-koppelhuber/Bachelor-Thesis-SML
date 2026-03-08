@@ -13,7 +13,7 @@ model:
 
   # Performance optimization
   optimization:
-    use_torch_compile: false # Enable torch.compile() for performance (PyTorch 2.0+, not supported on Windows)
+    use_torch_compile: true # Enable torch.compile() for performance (PyTorch 2.0+, not supported on Windows)
     torch_compile_mode: default # default, reduce-overhead, max-autotune (for training)
     torch_compile_mode_eval: default # Compile mode for evaluation/inference
 

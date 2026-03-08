@@ -400,9 +400,7 @@ class SelfPositionSearch(BaseTrainingMethod):
                 try:
                     batch = next(task_iterators[task_name])
                 except StopIteration:
-                    if self.use_streaming:
-                        all_available = False
-                        break
+                    # Restart iterator (works for both streaming and non-streaming)
                     task_iterators[task_name] = iter(task_dataloaders[task_name])
                     try:
                         batch = next(task_iterators[task_name])

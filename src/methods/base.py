@@ -569,19 +569,16 @@ class BaseTrainingMethod(ABC):
                     try:
                         batch = next(task_iterators[task_name])
                     except StopIteration:
-                        if self.use_streaming:
-                            # For streaming, we've exhausted the data - stop epoch early
+                        # Restart iterator (works for both streaming and non-streaming).
+                        # Streaming IterableDatasets restart from the beginning when
+                        # iter(dataloader) is called again — same as non-streaming.
+                        task_iterators[task_name] = iter(task_dataloaders[task_name])
+                        try:
+                            batch = next(task_iterators[task_name])
+                        except StopIteration:
+                            # Dataset is completely empty
                             all_batches_available = False
                             break
-                        else:
-                            # For regular datasets, restart iterator
-                            task_iterators[task_name] = iter(task_dataloaders[task_name])
-                            try:
-                                batch = next(task_iterators[task_name])
-                            except StopIteration:
-                                # Dataset is completely empty
-                                all_batches_available = False
-                                break
 
                     # Move batch to device
                     batch = {k: v.to(model.device) for k, v in batch.items()}
