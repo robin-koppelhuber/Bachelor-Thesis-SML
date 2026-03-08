@@ -717,5 +717,40 @@ def export_results_table(
             dist_df.to_csv(dist_csv_path, index=False)
             logger.info(f"Saved utopia distances to: {dist_csv_path}")
 
+        # Save raw predictions + labels for offline metric computation / replotting.
+        # Keys: task_names, preference_vectors, pref_{i}_{task}_predictions, pref_{i}_{task}_labels
+        try:
+            seen_prefs: set = set()
+            pref_vecs = []
+            for r in rows:
+                if r.get("preference_raw") is not None:
+                    key = tuple(r["preference_raw"])
+                    if key not in seen_prefs:
+                        seen_prefs.add(key)
+                        pref_vecs.append(r["preference_raw"])
+
+            npz_data: Dict[str, Any] = {
+                "task_names": np.array(list(task_names), dtype=object),
+                "preference_vectors": np.array(pref_vecs, dtype=np.float32),
+            }
+
+            has_predictions = False
+            for pref_idx, result in enumerate(all_results):
+                for task in task_names:
+                    er = result["task_results"][task]
+                    if er.predictions is not None and er.labels is not None:
+                        npz_data[f"pref_{pref_idx}_{task}_predictions"] = er.predictions.astype(np.int32)
+                        npz_data[f"pref_{pref_idx}_{task}_labels"] = er.labels.astype(np.int32)
+                        has_predictions = True
+
+            if has_predictions:
+                npz_path = output_dir / "raw_predictions.npz"
+                np.savez_compressed(npz_path, **npz_data)
+                logger.info(f"Saved raw predictions to: {npz_path}")
+            else:
+                logger.warning("No predictions/labels found in results — raw_predictions.npz not saved")
+        except Exception as e:
+            logger.warning(f"Failed to save raw predictions: {e}")
+
     logger.info("Results export completed successfully")
     return export_data

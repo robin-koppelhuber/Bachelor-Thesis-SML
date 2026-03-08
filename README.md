@@ -22,6 +22,8 @@ uv sync --extra cuda --dev   # + dev tools (linting, tests)
 
 Copy `.env.example` to `.env` and fill in `WANDB_API_KEY` and `HF_TOKEN`.
 
+> **Note:** `data/`, `checkpoints/`, and `outputs/` are excluded from the repository. The setup scripts below create them automatically under the paths configured in `configs/paths/default.yaml` (local) or `configs/cluster/euler.yaml` (Euler `$SCRATCH`).
+
 ### Download datasets and models
 
 ```bash
@@ -51,6 +53,25 @@ uv run python main.py -m benchmark=poc method=averaging,ties,chebyshev device=cu
 # Force retrain (ignore cached models)
 uv run python main.py benchmark=glue-2-label method=epo benchmark.force_retrain=true
 ```
+
+### Regenerating plots
+
+Each run saves raw predictions and labels to `visualizations/raw_predictions.npz`. Use `scripts/replot.py` to regenerate all plots and result tables from a previous run without reloading any models:
+
+```bash
+# Regenerate with the original config:
+uv run python scripts/replot.py outputs/glue_2_label/2025-01-15_12-34-56/
+
+# Use an updated benchmark config (e.g. to add new metrics):
+uv run python scripts/replot.py outputs/glue_2_label/2025-01-15_12-34-56/ \
+    --benchmark-config configs/benchmark/glue-2-label.yaml
+
+# Write to a custom output directory:
+uv run python scripts/replot.py outputs/glue_2_label/2025-01-15_12-34-56/ \
+    --output-dir /tmp/new_plots
+```
+
+Output lands in `<run_dir>/visualizations_replot_<timestamp>/` by default. If `raw_predictions.npz` is missing (older runs), the script falls back to `comprehensive_results.json` — existing metrics will be reproduced but new ones cannot be computed.
 
 ### Benchmarks
 
