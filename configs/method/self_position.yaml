@@ -29,3 +29,7 @@ method:
     # Disable torch.compile (Self Position reconstructs params in-place each step;
     # compile does not help and may conflict with dynamic param assignment)
     use_torch_compile: false
+
+    # Early stopping (disabled by default; enable with method.params.early_stopping=true)
+    early_stopping: false
+    patience: 3        # Epochs without improvement before stopping (β has T params, slow to overfit)

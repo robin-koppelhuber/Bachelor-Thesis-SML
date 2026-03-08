@@ -86,6 +86,9 @@ class BaseTrainingMethod(ABC):
         save_epoch_checkpoints: bool = True,
         auto_resume: bool = True,
         keep_all_epoch_checkpoints: bool = False,
+        early_stopping: bool = False,
+        patience: int = 2,
+        split_seed: int = 42,
         **kwargs,
     ):
         """
@@ -109,6 +112,15 @@ class BaseTrainingMethod(ABC):
             save_epoch_checkpoints: Save checkpoint after each epoch for resumption
             auto_resume: Automatically resume from latest checkpoint if available
             keep_all_epoch_checkpoints: Keep all epoch checkpoints (True) or only latest (False)
+            early_stopping: Stop training when validation loss stops improving.
+                Uses the reference split (first half of stratified val/test split) —
+                the same split used for Chebyshev utopia/nadir computation, disjoint
+                from final benchmark evaluation.
+            patience: Number of epochs without improvement before stopping (used when
+                early_stopping=True).
+            split_seed: Random seed for the stratified validation split. Must match the
+                seed used in reference_losses.py (default 42) to ensure the validation
+                set is the same subset used for utopia/nadir computation.
             **kwargs: Additional method-specific parameters
         """
         self.params = kwargs
@@ -129,6 +141,9 @@ class BaseTrainingMethod(ABC):
         self.save_epoch_checkpoints = save_epoch_checkpoints
         self.auto_resume = auto_resume
         self.keep_all_epoch_checkpoints = keep_all_epoch_checkpoints
+        self.early_stopping = early_stopping
+        self.patience = patience
+        self.split_seed = split_seed
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(lr={self.learning_rate}, epochs={self.num_epochs})"
@@ -241,6 +256,119 @@ class BaseTrainingMethod(ABC):
                 logger.info("  Streaming dataloader created (size unknown)")
 
         return task_dataloaders
+
+    def _load_validation_data(
+        self,
+        dataset_configs: Dict,
+        tokenizer: Any,
+        task_names: list,
+        cache_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Load the reference split (first half of stratified val/test split) for early stopping.
+
+        Mirrors the split logic in src/benchmarks/reference_losses.py:_load_reference_split()
+        so the validation set is identical to the subset used for utopia/nadir computation.
+        Uses split_seed to ensure reproducibility and consistency with reference_losses.py
+        (default seed=42).
+
+        The second half of the stratified split is reserved for final benchmark evaluation
+        and is never loaded here.
+        """
+        from pathlib import Path
+
+        from torch.utils.data import DataLoader
+        from transformers import default_data_collator
+
+        from src.data.loaders import load_hf_dataset, preprocess_dataset
+
+        val_dataloaders = {}
+
+        for task_name in task_names:
+            task_cfg = dataset_configs[task_name]
+            logger.info(f"\nLoading validation data for {task_name}...")
+
+            # Use validation split for GLUE tasks, test split for others
+            val_split = task_cfg.hf_dataset.split.get("validation", None)
+            load_split = val_split if val_split else task_cfg.hf_dataset.split.test
+
+            dataset = load_hf_dataset(
+                dataset_path=task_cfg.hf_dataset.path,
+                subset=task_cfg.hf_dataset.get("subset", None),
+                split=load_split,
+                cache_dir=Path(cache_dir) if cache_dir else None,
+                streaming=False,
+            )
+
+            # Stratified 50/50 split — take first half (reference split)
+            # Must match get_evaluation_split() / _load_reference_split() in reference_losses.py
+            label_column = task_cfg.preprocessing.label_column
+            split_result = dataset.train_test_split(
+                test_size=0.5,
+                stratify_by_column=label_column,
+                seed=self.split_seed,
+            )
+            dataset = split_result["train"]  # first half = reference split
+
+            processed = preprocess_dataset(
+                dataset=dataset,
+                tokenizer=tokenizer,
+                task_config=task_cfg,
+                max_length=task_cfg.preprocessing.max_seq_length,
+            )
+            processed.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+
+            val_dataloaders[task_name] = DataLoader(
+                processed,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=self.dataloader_num_workers,
+                collate_fn=default_data_collator,
+                pin_memory=True if torch.cuda.is_available() else False,
+                persistent_workers=False,
+            )
+            logger.info(f"  Loaded {len(processed)} validation samples ({len(val_dataloaders[task_name])} batches)")
+
+        return val_dataloaders
+
+    @torch.no_grad()
+    def _compute_validation_loss(
+        self,
+        model: torch.nn.Module,
+        val_dataloaders: Dict,
+        task_names: list,
+        dataset_configs: Dict,
+        preference_vector,
+        device: torch.device,
+    ) -> float:
+        """
+        Compute preference-weighted validation loss on the reference split.
+
+        Returns Σ_k r_k * avg_loss_k where avg_loss_k is the mean cross-entropy
+        on the validation set for task k. Used for early stopping.
+        """
+        import torch.nn.functional as F
+
+        model.eval()
+        total = 0.0
+
+        for k, task_name in enumerate(task_names):
+            task_loss = 0.0
+            steps = 0
+            task_cfg = dataset_configs[task_name]
+            for batch in val_dataloaders[task_name]:
+                labels = batch.pop("labels").to(device)
+                outputs = model(**{kk: vv.to(device) for kk, vv in batch.items()})
+                logits = outputs.logits[:, : task_cfg.num_labels]
+                task_loss += F.cross_entropy(logits, labels).item()
+                batch["labels"] = labels  # restore for safety
+                steps += 1
+            avg_task_loss = task_loss / max(steps, 1)
+            total += float(preference_vector[k]) * avg_task_loss
+            logger.info(f"  Val {task_name}: loss={avg_task_loss:.4f}")
+
+        model.train()
+        return total
 
     def _initialize_model(
         self,
@@ -646,6 +774,16 @@ class BaseTrainingMethod(ABC):
             dataset_configs, tokenizer, task_names, cache_dir=dataset_cache_dir
         )
 
+        # 2b. Load validation data for early stopping (reference split, first half of
+        # stratified val/test split — same subset used for utopia/nadir computation,
+        # disjoint from final benchmark evaluation which uses the second half).
+        val_dataloaders = None
+        if self.early_stopping:
+            logger.info("\nLoading validation data for early stopping...")
+            val_dataloaders = self._load_validation_data(
+                dataset_configs, tokenizer, task_names, cache_dir=dataset_cache_dir
+            )
+
         # 3. Initialize model
         model = self._initialize_model(base_model, dataset_configs, device, cache_dir=model_cache_dir)
 
@@ -716,6 +854,11 @@ class BaseTrainingMethod(ABC):
 
         # 9. Training loop
         logger.info("\nStarting training...")
+        best_val_loss = float("inf")
+        no_improve_count = 0
+        best_state_dict = None
+        stopped_early = False
+
         for epoch in range(start_epoch, self.num_epochs):
             avg_loss = self._train_epoch(
                 model=model,
@@ -752,6 +895,40 @@ class BaseTrainingMethod(ABC):
             except Exception as e:
                 logger.warning(f"Failed to log epoch to W&B: {e}")
 
+            # Early stopping: evaluate on reference validation split
+            if self.early_stopping and val_dataloaders is not None:
+                val_loss = self._compute_validation_loss(
+                    model, val_dataloaders, task_names, dataset_configs, preference_vector, device
+                )
+                logger.info(
+                    f"  Early stopping — val_loss: {val_loss:.4f}  "
+                    f"(best: {best_val_loss:.4f}, no-improve: {no_improve_count}/{self.patience})"
+                )
+
+                # Log val loss to W&B
+                try:
+                    import wandb
+
+                    if wandb.run:
+                        wandb.log({f"{wandb_prefix}/val_loss": val_loss}, step=epoch + 1)
+                except (ImportError, AttributeError, Exception):
+                    pass
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    no_improve_count = 0
+                    best_state_dict = copy.deepcopy(model.state_dict())
+                    logger.info(f"  New best model at epoch {epoch + 1} (val_loss={best_val_loss:.4f})")
+                else:
+                    no_improve_count += 1
+                    if no_improve_count >= self.patience:
+                        logger.info(
+                            f"Early stopping triggered at epoch {epoch + 1} "
+                            f"(patience={self.patience}, best val_loss={best_val_loss:.4f})"
+                        )
+                        stopped_early = True
+                        break
+
             # Save epoch checkpoint if enabled
             if self.save_epoch_checkpoints and epoch_checkpoint_dir and model_identifier:
                 self._save_epoch_checkpoint(
@@ -774,6 +951,14 @@ class BaseTrainingMethod(ABC):
                 import gc
 
                 gc.collect()
+
+        # Restore best model state if early stopping was active
+        if self.early_stopping and best_state_dict is not None:
+            model.load_state_dict(best_state_dict)
+            if stopped_early:
+                logger.info(f"Restored best model after early stopping (val_loss={best_val_loss:.4f})")
+            else:
+                logger.info(f"Restored best model from completed training (val_loss={best_val_loss:.4f})")
 
         # 10. Save final trained model if requested
         if save_path:

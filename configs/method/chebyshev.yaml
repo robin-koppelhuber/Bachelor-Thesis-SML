@@ -8,7 +8,7 @@ method:
   params:
     # Training settings
     learning_rate: 2e-5
-    num_epochs: 3 # increase?
+    num_epochs: 5
     batch_size: 8
     warmup_steps: 100
     weight_decay: 0.01
@@ -41,3 +41,7 @@ method:
     save_epoch_checkpoints: true  # Save checkpoint after each epoch
     auto_resume: true  # Automatically resume from latest checkpoint if available
     keep_all_epoch_checkpoints: false  # Keep all epoch checkpoints (true) or only latest (false)
+
+    # Early stopping (disabled by default; enable with method.params.early_stopping=true)
+    early_stopping: false
+    patience: 2        # Epochs without improvement before stopping
