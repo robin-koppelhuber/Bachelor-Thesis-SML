@@ -1001,7 +1001,7 @@ class BaseTrainingMethod(ABC):
                 task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
 
         # 13. Flatten and return
-        from src.benchmarks.poc.run import flatten_task_vector
+        from src.benchmarks.run import flatten_task_vector
 
         flattened = flatten_task_vector(task_vector_dict)
 
