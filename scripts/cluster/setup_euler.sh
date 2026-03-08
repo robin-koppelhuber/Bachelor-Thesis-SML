@@ -42,6 +42,7 @@ echo "      Done."
 echo ""
 echo "[2/4] Syncing uv environment (cuda + cluster group)..."
 cd "${REPO_DIR}"
+export UV_CACHE_DIR="${SCRATCH}/.cache/uv"
 
 # Load CUDA so torch[cuda] installs correctly
 module load cuda 2>/dev/null || echo "      (no CUDA module — torch will install but check CUDA availability)"

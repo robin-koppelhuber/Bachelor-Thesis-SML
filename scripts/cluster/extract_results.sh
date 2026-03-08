@@ -33,6 +33,9 @@ rsync -avz --progress \
     --include="*.log" \
     --include="*.yaml" \
     --include="*.md" \
+    --include="*.json" \
+    --include="*.csv" \
+    --include="*.npz" \
     --exclude="*" \
     "${EULER_USER}@${EULER_HOST}:${EULER_SCRATCH_PATH}/" \
     "${LOCAL_DEST}/"

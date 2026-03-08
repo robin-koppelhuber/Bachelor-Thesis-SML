@@ -859,10 +859,16 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
         if wandb.run:
             logger.info("\n" + "=" * 80)
-            logger.info("Logging results to W&B as bar charts")
+            logger.info("Logging results to W&B")
             logger.info("=" * 80)
 
-            from src.visualization.wandb_viz import log_benchmark_results_as_bar_charts
+            from src.visualization.wandb_viz import (
+                log_benchmark_results_as_bar_charts,
+                log_figures_to_wandb,
+            )
+
+            if figures:
+                log_figures_to_wandb(figures)
 
             log_benchmark_results_as_bar_charts(
                 all_results=all_results,

@@ -53,6 +53,12 @@ echo "======================================================"
 # PyTorch cu128 wheels bundle their own CUDA runtime — no module load needed.
 # Only the GPU driver on the compute node is required (always present on Euler).
 
+# uv cache: $HOME may be unset on compute nodes; point explicitly to $SCRATCH.
+export UV_CACHE_DIR="${SCRATCH}/.cache/uv"
+
+# Compute nodes have no internet — use local HuggingFace cache only.
+export HF_HUB_OFFLINE=1
+
 # Change to the repo (symlink from $HOME points to the repo in $SCRATCH)
 REPO_DIR="${HOME}/Bachelor-Thesis-SML"
 cd "${REPO_DIR}" || { echo "ERROR: ${REPO_DIR} not found"; exit 1; }
