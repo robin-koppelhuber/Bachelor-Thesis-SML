@@ -22,6 +22,7 @@ def load_model(
     device: Optional[torch.device] = None,
     torch_dtype: str = "auto",
     ignore_mismatched_sizes: bool = False,
+    zero_classifier: bool = False,
 ) -> PreTrainedModel:
     """
     Load model from HuggingFace
@@ -33,6 +34,10 @@ def load_model(
         device: Optional device to load model on
         torch_dtype: PyTorch dtype ('auto', 'float32', 'float16', 'bfloat16')
         ignore_mismatched_sizes: Whether to ignore size mismatches (for fine-tuned models)
+        zero_classifier: If True, zero-initialize all parameters outside the pretrained backbone
+            (i.e. the classification head). Use when loading a base model for task vector
+            computation or evaluation, so that task vectors capture the full trained head rather
+            than a delta from an arbitrary random initialization.
 
     Returns:
         Loaded model
@@ -66,6 +71,19 @@ def load_model(
         model_id,
         **load_kwargs,
     )
+
+    if zero_classifier:
+        # Zero-initialize parameters outside the pretrained backbone (i.e. the classification
+        # head). The base model (e.g. roberta-base) has no trained classification head — the
+        # head weights are randomly initialized as an artifact of the HuggingFace API. Zeroing
+        # them ensures task vectors capture the full trained head (delta = trained - 0 = trained)
+        # and evaluation recovers it exactly (0 + delta = trained), with no random-init noise.
+        base_prefix = model.base_model_prefix + "."
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if not name.startswith(base_prefix):
+                    param.zero_()
+        logger.info(f"  Zeroed classification head (params outside '{base_prefix}')")
 
     if device is not None:
         model = model.to(device)

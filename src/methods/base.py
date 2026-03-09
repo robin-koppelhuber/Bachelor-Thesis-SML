@@ -838,6 +838,14 @@ class BaseTrainingMethod(ABC):
 
         base_state_dict = copy.deepcopy(model.state_dict())
 
+        # Zero classifier entries in the saved base so that delta = full trained head.
+        # Training still starts from the random head (good for gradient signal), but the
+        # delta ignores it — consistent with the zero-classifier base used at evaluation.
+        base_prefix = model.base_model_prefix + "."
+        for name, tensor in base_state_dict.items():
+            if not name.startswith(base_prefix):
+                tensor.zero_()
+
         # 4. Setup optimizer and scheduler
         optimizer, scheduler = self._setup_optimizer(model, train_dataloaders)
 
@@ -1023,12 +1031,7 @@ class BaseTrainingMethod(ABC):
 
         for name, param in trained_state_dict.items():
             if name in base_state_dict:
-                # Return full trained weights (not a delta from the training base model).
-                # The training base model has a randomly initialized classification head, so
-                # subtracting it and then adding to a DIFFERENT randomly initialized eval base
-                # would corrupt the head. The benchmark runner uses load_state_dict() directly
-                # for training-based methods (see run.py) instead of apply_task_vector().
-                task_vector_dict[name] = param.cpu()
+                task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
 
         # 13. Flatten and return
         from src.benchmarks.run import flatten_task_vector

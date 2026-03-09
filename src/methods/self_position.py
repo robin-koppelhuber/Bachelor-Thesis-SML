@@ -198,6 +198,7 @@ class SelfPositionSearch(BaseTrainingMethod):
                 num_labels=dataset_cfg.num_labels,
                 cache_dir=Path(self._model_cache_dir) if self._model_cache_dir else None,
                 device=torch.device("cpu"),
+                zero_classifier=True,
             )
             ft_model = load_model(
                 model_id=dataset_cfg.finetuned_checkpoint,

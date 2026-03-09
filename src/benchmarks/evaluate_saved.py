@@ -109,6 +109,7 @@ def evaluate_saved_model(
             cache_dir=Path(cfg.paths.hf_models_cache_base) if cfg.paths.hf_models_cache_base else None,
             device=device,
             torch_dtype=cfg.model.loading.torch_dtype,
+            zero_classifier=True,
         )
 
     # Load dataset configs
