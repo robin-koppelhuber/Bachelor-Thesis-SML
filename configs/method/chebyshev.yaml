@@ -28,13 +28,13 @@ method:
     max_grad_norm: 1.0
 
     # Performance optimization
-    use_torch_compile: false  # compile overhead (~30-60s × 7 models) > step speedup at current training length (156 steps/epoch)
+    use_torch_compile: false
     torch_compile_mode: default  # default, reduce-overhead, max-autotune
 
     # Memory optimization
     use_fp16: true   # Mixed precision training (~1.5-2× speedup; <0.1 pp accuracy loss on GLUE)
     dataloader_num_workers: 0  # Avoid multiprocessing overhead
-    max_samples_per_task: 5000  # Cap per task to keep epochs manageable (~156 steps/epoch at bs=32)
+    max_samples_per_task: 20000  # ~625 steps/epoch at bs=32; covers CoLA/MRPC fully, 17%/29% of QNLI/SST2
     use_streaming: false  # Streaming datasets (minimal RAM, slower but accurate)
 
     # Checkpoint management

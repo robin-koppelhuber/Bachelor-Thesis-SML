@@ -33,11 +33,11 @@ method:
     cpu_gradient_offload: true
     use_fp16: true   # Mixed precision training (~1.5-2× speedup; <0.1 pp accuracy loss on GLUE)
     dataloader_num_workers: 0
-    max_samples_per_task: 5000  # Cap per task to keep epochs manageable (~156 steps/epoch at bs=32)
+    max_samples_per_task: 20000  # ~625 steps/epoch at bs=32; covers CoLA/MRPC fully, 17%/29% of QNLI/SST2
     use_streaming: false
 
     # Performance optimization
-    use_torch_compile: false  # compile overhead > step speedup at current training length (156 steps/epoch)
+    use_torch_compile: false
 
     # Checkpoint management
     save_epoch_checkpoints: false

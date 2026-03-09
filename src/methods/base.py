@@ -154,6 +154,7 @@ class BaseTrainingMethod(ABC):
         tokenizer: Any,
         task_names: list,
         cache_dir: Optional[str] = None,
+        sampling_seed: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Load training data for all tasks with memory-efficient strategies
@@ -213,10 +214,12 @@ class BaseTrainingMethod(ABC):
                     if original_size > self.max_samples_per_task:
                         # Shuffle before selecting to avoid class-order bias in datasets like QNLI
                         # (constructed from SQuAD: same question repeated with alternating labels).
-                        # Uses global benchmark seed (split_seed) for reproducibility.
-                        dataset = dataset.shuffle(seed=self.split_seed).select(range(self.max_samples_per_task))
+                        # sampling_seed varies per epoch so different epochs see different subsets,
+                        # increasing data coverage across training; falls back to split_seed.
+                        seed = sampling_seed if sampling_seed is not None else self.split_seed
+                        dataset = dataset.shuffle(seed=seed).select(range(self.max_samples_per_task))
                         logger.info(
-                            f"  Limited dataset: {original_size} -> {self.max_samples_per_task} samples (saves ~{(1 - self.max_samples_per_task / original_size) * 100:.0f}% RAM)"
+                            f"  Limited dataset: {original_size} -> {self.max_samples_per_task} samples (seed={seed})"
                         )
 
             # Preprocess with caching enabled
@@ -688,8 +691,8 @@ class BaseTrainingMethod(ABC):
             total_loss += multi_task_loss.item()
             num_steps += 1
 
-            # Always track global step so epoch-level W&B logging stays monotonic
-            self._last_global_step = epoch * steps_per_epoch + step + 1
+            # Local step resets to 1 for each preference vector's training.
+            local_step = epoch * steps_per_epoch + step + 1
 
             # Periodic logging
             if (step + 1) % log_interval == 0 or step == steps_per_epoch - 1:
@@ -703,11 +706,11 @@ class BaseTrainingMethod(ABC):
 
                     if wandb.run:
                         prefix = wandb_prefix if wandb_prefix else "train"
-                        log_dict = {f"{prefix}/step_loss": multi_task_loss.item()}
+                        log_dict = {f"{prefix}/step_loss": multi_task_loss.item(), "local_step": local_step}
                         for task_name, task_loss in zip(task_names, losses_tensor):
                             log_dict[f"{prefix}/task_loss/{task_name}"] = task_loss.item()
-                        wandb.log(log_dict, step=self._last_global_step)
-                        logger.debug(f"Logged to W&B: step={self._last_global_step}, metrics={list(log_dict.keys())}")
+                        wandb.log(log_dict)
+                        logger.debug(f"Logged to W&B: local_step={local_step}, metrics={list(log_dict.keys())}")
                 except (ImportError, AttributeError) as e:
                     logger.debug(f"W&B not available: {e}")
                 except Exception as e:
@@ -881,6 +884,9 @@ class BaseTrainingMethod(ABC):
         # Format: "pref_0.25_0.25_0.25_0.25" for better organization in W&B
         wandb_prefix = "pref_" + "_".join([f"{p:.2f}" for p in preference_vector])
 
+        # local_step resets to 1 for each preference vector's training; W&B auto-increments
+        # its internal counter (no step= argument → no monotonicity errors).
+
         # 9. Training loop
         logger.info("\nStarting training...")
         best_val_loss = float("inf")
@@ -889,6 +895,16 @@ class BaseTrainingMethod(ABC):
         stopped_early = False
 
         for epoch in range(start_epoch, self.num_epochs):
+            # Resample training data each epoch with an epoch-varying seed so that
+            # large datasets (QNLI 116k, SST2 70k) get broader coverage across epochs.
+            # Datasets smaller than max_samples_per_task are unaffected.
+            if self.max_samples_per_task is not None:
+                train_dataloaders = self._load_training_data(
+                    dataset_configs, tokenizer, task_names,
+                    cache_dir=dataset_cache_dir,
+                    sampling_seed=self.split_seed + epoch,
+                )
+
             avg_loss = self._train_epoch(
                 model=model,
                 task_dataloaders=train_dataloaders,
@@ -915,7 +931,7 @@ class BaseTrainingMethod(ABC):
                         f"{wandb_prefix}/loss": avg_loss,
                         f"{wandb_prefix}/learning_rate": optimizer.param_groups[0]["lr"],
                     }
-                    wandb.log(epoch_log_dict, step=getattr(self, "_last_global_step", epoch + 1))
+                    wandb.log(epoch_log_dict)
                     logger.info(f"Logged epoch {epoch + 1} to W&B under '{wandb_prefix}'")
                 else:
                     logger.warning("W&B imported but wandb.run is None - logging disabled")
@@ -940,7 +956,7 @@ class BaseTrainingMethod(ABC):
                     import wandb
 
                     if wandb.run:
-                        wandb.log({f"{wandb_prefix}/val_loss": val_loss}, step=getattr(self, "_last_global_step", epoch + 1))
+                        wandb.log({f"{wandb_prefix}/val_loss": val_loss})
                 except (ImportError, AttributeError, Exception):
                     pass
 

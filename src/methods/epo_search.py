@@ -489,17 +489,19 @@ class EPOFineTuning(BaseTrainingMethod):
             # 3. Build Gram matrix on CPU (numpy)
             # ----------------------------------------------------------------
             losses_np = np.array(task_losses_scalar, dtype=np.float64)
-            grads_np = np.stack([g.numpy().astype(np.float64) for g in task_grads_cpu])
-            # shape: (T, n_params)
+            # Stay in float32 to avoid doubling peak memory: 4×125M params×8B(float64) ≈ 4 GB
+            grads_np = np.stack([g.numpy() for g in task_grads_cpu])  # (T, n_params), float32
+            del task_grads_cpu  # free ~2 GB before Gram computation
 
             if self.normalize_gradients:
                 norms = np.linalg.norm(grads_np, axis=1, keepdims=True)
                 norms = np.maximum(norms, 1e-8)
-                grads_for_gram = grads_np / norms
+                grads_for_gram = (grads_np / norms).astype(np.float32)
             else:
                 grads_for_gram = grads_np
 
-            G = grads_for_gram @ grads_for_gram.T  # (T, T)
+            G = (grads_for_gram @ grads_for_gram.T).astype(np.float64)  # (T, T) — tiny, ok to upcast
+            del grads_for_gram
 
             # ----------------------------------------------------------------
             # 4. Normalise losses to excess risk (if reference points available)
@@ -518,9 +520,8 @@ class EPOFineTuning(BaseTrainingMethod):
             # ----------------------------------------------------------------
             # 6. Compute combined gradient on CPU → load to model
             # ----------------------------------------------------------------
-            combined_grad_cpu = torch.zeros_like(task_grads_cpu[0])
-            for a, g in zip(alpha, task_grads_cpu):
-                combined_grad_cpu.add_(g, alpha=float(a))
+            combined_grad_cpu = torch.from_numpy((alpha.astype(np.float32) @ grads_np).copy())
+            del grads_np
 
             # Assign combined gradient back to model parameters on GPU
             idx = 0
@@ -565,12 +566,12 @@ class EPOFineTuning(BaseTrainingMethod):
 
                     if wandb.run:
                         prefix = wandb_prefix or "train"
-                        global_step = epoch * steps_per_epoch + step + 1
-                        log_dict = {f"{prefix}/step_loss": step_loss}
+                        local_step = epoch * steps_per_epoch + step + 1
+                        log_dict = {f"{prefix}/step_loss": step_loss, "local_step": local_step}
                         for tname, tl, ta in zip(task_names, task_losses_scalar, alpha):
                             log_dict[f"{prefix}/task_loss/{tname}"] = tl
                             log_dict[f"{prefix}/alpha/{tname}"] = ta
-                        wandb.log(log_dict, step=global_step)
+                        wandb.log(log_dict)
                 except (ImportError, AttributeError, Exception):
                     pass
 
