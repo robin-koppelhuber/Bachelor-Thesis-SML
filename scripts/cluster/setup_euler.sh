@@ -36,6 +36,7 @@ mkdir -p "${SCRATCH_DIR}/checkpoints/finetuned"
 mkdir -p "${SCRATCH_DIR}/checkpoints/trained"
 mkdir -p "${SCRATCH_DIR}/checkpoints/eval_cache"
 mkdir -p "${SCRATCH_DIR}/outputs"
+mkdir -p "${SCRATCH_DIR}/logs"
 echo "      Done."
 
 # ---- 2. Python environment ----

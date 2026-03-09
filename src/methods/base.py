@@ -316,7 +316,7 @@ class BaseTrainingMethod(ABC):
                 dataset=dataset,
                 tokenizer=tokenizer,
                 task_config=task_cfg,
-                max_length=task_cfg.preprocessing.max_seq_length,
+                max_length=task_cfg.preprocessing.max_length,
             )
             processed.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 

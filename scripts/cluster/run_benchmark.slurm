@@ -25,11 +25,11 @@
 # ============================================================
 
 #SBATCH --job-name=sml-bench
-#SBATCH --output=%x_%j.out          # stdout: <jobname>_<jobid>.out
-#SBATCH --error=%x_%j.err           # stderr: <jobname>_<jobid>.err
+#SBATCH --output=/cluster/scratch/%u/bachelor-thesis-sml/logs/%x_%j.out
+#SBATCH --error=/cluster/scratch/%u/bachelor-thesis-sml/logs/%x_%j.err
 #SBATCH --time=12:00:00             # wall time: chebyshev/epo = 7 preference vectors × 5 epochs; override with --time=
 #SBATCH --mem-per-cpu=4G             # EPO offloads ~2 GB of gradients to CPU; 4×4=16 GB total
-#SBATCH --cpus-per-task=4           # 1-2 dataloader workers per task; 4 is comfortable for EPO
+#SBATCH --cpus-per-task=2           # 1-2 dataloader workers per task; 4 is comfortable for EPO
 #SBATCH --gpus=1
 #SBATCH --gres=gpumem:10g           # ~2x safety margin over RoBERTa-base worst-case (~4.5 GB)
 
