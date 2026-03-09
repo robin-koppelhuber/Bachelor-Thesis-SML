@@ -16,6 +16,8 @@ benchmark:
     metrics:
       - name: accuracy
         plots: []
+      - name: f1_macro
+        plots: []
       - name: cohen_kappa
         plots: []
       - name: mcc

@@ -30,6 +30,16 @@ method:
     # compile does not help and may conflict with dynamic param assignment)
     use_torch_compile: false
 
-    # Early stopping (disabled by default; enable with method.params.early_stopping=true)
-    early_stopping: false
+    # Memory optimization
+    max_samples_per_task: 5000  # Cap per task to keep epochs manageable (~156 steps/epoch at bs=32)
+    dataloader_num_workers: 0
+    use_streaming: false
+
+    # Checkpoint management
+    save_epoch_checkpoints: false
+    auto_resume: true
+    keep_all_epoch_checkpoints: false
+
+    # Early stopping
+    early_stopping: true
     patience: 3        # Epochs without improvement before stopping (β has T params, slow to overfit)

@@ -9,7 +9,7 @@ method:
     # Training settings
     learning_rate: 2e-5
     num_epochs: 5
-    batch_size: 16
+    batch_size: 32
     warmup_steps: 100
     weight_decay: 0.01
 
@@ -29,6 +29,21 @@ method:
     gradient_accumulation_steps: 1
     max_grad_norm: 1.0
 
-    # Early stopping (disabled by default; enable with method.params.early_stopping=true)
-    early_stopping: false
-    patience: 2        # Epochs without improvement before stopping
+    # Memory optimization — EPO stores per-task gradients (~4×125MB); offload to CPU to avoid OOM
+    cpu_gradient_offload: true
+    use_fp16: true   # Mixed precision training (~1.5-2× speedup; <0.1 pp accuracy loss on GLUE)
+    dataloader_num_workers: 0
+    max_samples_per_task: 5000  # Cap per task to keep epochs manageable (~156 steps/epoch at bs=32)
+    use_streaming: false
+
+    # Performance optimization
+    use_torch_compile: false  # compile overhead > step speedup at current training length (156 steps/epoch)
+
+    # Checkpoint management
+    save_epoch_checkpoints: false
+    auto_resume: true
+    keep_all_epoch_checkpoints: false
+
+    # Early stopping
+    early_stopping: true
+    patience: 3        # Epochs without improvement before stopping

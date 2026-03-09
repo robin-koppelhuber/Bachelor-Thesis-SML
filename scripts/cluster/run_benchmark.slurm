@@ -27,7 +27,7 @@
 #SBATCH --job-name=sml-bench
 #SBATCH --output=%x_%j.out          # stdout: <jobname>_<jobid>.out
 #SBATCH --error=%x_%j.err           # stderr: <jobname>_<jobid>.err
-#SBATCH --time=4:00:00              # wall time (adjust per method)
+#SBATCH --time=12:00:00             # wall time: chebyshev/epo = 7 preference vectors × 5 epochs; override with --time=
 #SBATCH --mem-per-cpu=4G             # EPO offloads ~2 GB of gradients to CPU; 4×4=16 GB total
 #SBATCH --cpus-per-task=4           # 1-2 dataloader workers per task; 4 is comfortable for EPO
 #SBATCH --gpus=1

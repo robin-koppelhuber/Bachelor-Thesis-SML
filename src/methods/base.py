@@ -211,8 +211,10 @@ class BaseTrainingMethod(ABC):
                 if self.max_samples_per_task is not None:
                     original_size = len(dataset)
                     if original_size > self.max_samples_per_task:
-                        # Use select for reproducible sampling
-                        dataset = dataset.select(range(self.max_samples_per_task))
+                        # Shuffle before selecting to avoid class-order bias in datasets like QNLI
+                        # (constructed from SQuAD: same question repeated with alternating labels).
+                        # Uses global benchmark seed (split_seed) for reproducibility.
+                        dataset = dataset.shuffle(seed=self.split_seed).select(range(self.max_samples_per_task))
                         logger.info(
                             f"  Limited dataset: {original_size} -> {self.max_samples_per_task} samples (saves ~{(1 - self.max_samples_per_task / original_size) * 100:.0f}% RAM)"
                         )
