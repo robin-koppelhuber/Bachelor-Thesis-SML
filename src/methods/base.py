@@ -315,8 +315,13 @@ class BaseTrainingMethod(ABC):
             processed = preprocess_dataset(
                 dataset=dataset,
                 tokenizer=tokenizer,
-                task_config=task_cfg,
+                text_column=task_cfg.preprocessing.text_column,
+                text_column_2=task_cfg.preprocessing.get("text_column_2", None),
+                label_column=task_cfg.preprocessing.label_column,
+                label_map=task_cfg.preprocessing.get("label_map", None),
                 max_length=task_cfg.preprocessing.max_length,
+                truncation=task_cfg.preprocessing.truncation,
+                padding=task_cfg.preprocessing.padding,
             )
             processed.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
