@@ -182,10 +182,21 @@ class SelfPositionSearch(BaseTrainingMethod):
 
         logger.info("Loading task vectors for Self Position...")
 
-        # Save base model params as flat float32 CPU tensor (max-labels model)
-        self._base_params_cpu = torch.cat([p.detach().cpu().float().flatten() for p in model.parameters()])
+        # Save base model params as flat float32 CPU tensor (max-labels model).
+        # Zero classifier entries to match the zero-classifier evaluation base:
+        # merged = base_backbone + Σ α_k τ_k_backbone  (correct)
+        #          0              + Σ α_k τ_k_classifier (correct, since τ_k = ft - 0)
+        # Without zeroing, merged would add the random training head to the classifier.
+        base_prefix = model.base_model_prefix + "."
+        parts = []
+        for name, param in model.named_parameters():
+            flat = param.detach().cpu().float().flatten()
+            if not name.startswith(base_prefix):
+                flat = torch.zeros_like(flat)
+            parts.append(flat)
+        self._base_params_cpu = torch.cat(parts)
         base_size = self._base_params_cpu.shape[0]
-        logger.info(f"  Base model: {base_size:,} parameters")
+        logger.info(f"  Base model: {base_size:,} parameters (classifier zeroed)")
 
         self._task_vectors_cpu = {}
 
@@ -498,12 +509,12 @@ class SelfPositionSearch(BaseTrainingMethod):
 
                     if wandb.run:
                         prefix = wandb_prefix or "train"
-                        global_step = epoch * steps_per_epoch + step + 1
-                        log_dict = {f"{prefix}/step_loss": step_loss}
+                        local_step = epoch * steps_per_epoch + step + 1
+                        log_dict = {f"{prefix}/step_loss": step_loss, "local_step": local_step}
                         for tname, tl, ta in zip(task_names, task_losses_scalar, alpha_np):
                             log_dict[f"{prefix}/task_loss/{tname}"] = tl
                             log_dict[f"{prefix}/alpha/{tname}"] = float(ta)
-                        wandb.log(log_dict, step=global_step)
+                        wandb.log(log_dict)
                 except (ImportError, AttributeError, Exception):
                     pass
 

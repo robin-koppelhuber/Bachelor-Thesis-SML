@@ -542,11 +542,6 @@ class EPOFineTuning(BaseTrainingMethod):
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
-            # Keep scaler's internal state in sync (even though we didn't use it
-            # for this step) so that fp16 autocast functions correctly.
-            if scaler is not None:
-                scaler.update()
-
             # Track scalar loss for logging (α-weighted combination)
             step_loss = float(np.dot(alpha, task_losses_scalar))
             total_loss += step_loss

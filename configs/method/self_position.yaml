@@ -6,7 +6,7 @@ method:
     lr_alpha: 5.0e-3
 
     # Training settings
-    num_epochs: 10           # More epochs: β has T params, not millions
+    num_epochs: 5            # β has only T params; Adam at lr=5e-3 converges in ~1-2 epochs; early stopping provides safety net
     batch_size: 32
 
     # TIES preprocessing (optional): apply trim + global sign + disjoint mask
@@ -42,4 +42,4 @@ method:
 
     # Early stopping
     early_stopping: true
-    patience: 3        # Epochs without improvement before stopping (β has T params, slow to overfit)
+    patience: 2        # Epochs without improvement before stopping
