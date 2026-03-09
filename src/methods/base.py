@@ -347,19 +347,26 @@ class BaseTrainingMethod(ABC):
         dataset_configs: Dict,
         preference_vector,
         device: torch.device,
+        **method_kwargs,
     ) -> float:
         """
-        Compute preference-weighted validation loss on the reference split.
+        Compute the method's validation objective on the reference split.
 
-        Returns Σ_k r_k * avg_loss_k where avg_loss_k is the mean cross-entropy
-        on the validation set for task k. Used for early stopping.
+        Computes per-task average CE losses, then calls _compute_multi_task_loss
+        with the same method_kwargs used during training (e.g. utopia_point and
+        nadir_point for Chebyshev). This ensures the validation signal uses the
+        same normalized objective as training rather than a raw weighted sum.
+
+        For EPO and Self-Position (which override _train_epoch and have stub
+        _compute_multi_task_loss returning weighted sum), this degrades gracefully
+        to preference-weighted CE — the best available scalar proxy for those methods.
         """
         import torch.nn.functional as F
 
         model.eval()
-        total = 0.0
+        per_task_losses = []
 
-        for k, task_name in enumerate(task_names):
+        for task_name in task_names:
             task_loss = 0.0
             steps = 0
             task_cfg = dataset_configs[task_name]
@@ -371,11 +378,24 @@ class BaseTrainingMethod(ABC):
                 batch["labels"] = labels  # restore for safety
                 steps += 1
             avg_task_loss = task_loss / max(steps, 1)
-            total += float(preference_vector[k]) * avg_task_loss
+            per_task_losses.append(avg_task_loss)
             logger.info(f"  Val {task_name}: loss={avg_task_loss:.4f}")
 
+        # Compute method-specific objective (e.g. normalized Chebyshev for ChebyshevFineTuning)
+        losses_tensor = torch.tensor(per_task_losses, dtype=torch.float32, device=device)
+        preference_tensor = torch.tensor(preference_vector, dtype=torch.float32, device=device)
+        device_kwargs = {
+            k: v.to(device) if isinstance(v, torch.Tensor) else v
+            for k, v in method_kwargs.items()
+        }
+        val_objective = self._compute_multi_task_loss(
+            task_losses=losses_tensor,
+            preference_vector=preference_tensor,
+            **device_kwargs,
+        )
+
         model.train()
-        return total
+        return val_objective.item()
 
     def _initialize_model(
         self,
@@ -549,8 +569,10 @@ class BaseTrainingMethod(ABC):
                 steps_per_epoch = 10000 // self.batch_size
             logger.info(f"  Streaming mode: using {steps_per_epoch} steps per epoch")
 
+        log_interval = max(10, steps_per_epoch // 4)  # ~4 log points per epoch regardless of length
+
         logger.info(f"\nEpoch {epoch + 1}/{self.num_epochs}")
-        logger.info(f"  Training steps: {steps_per_epoch}")
+        logger.info(f"  Training steps: {steps_per_epoch} (logging every {log_interval} steps)")
 
         step = 0
         while step < steps_per_epoch:
@@ -666,31 +688,26 @@ class BaseTrainingMethod(ABC):
             total_loss += multi_task_loss.item()
             num_steps += 1
 
-            # Periodic logging (before incrementing step to get correct count)
-            if (step + 1) % 100 == 0 or step == steps_per_epoch - 1:
+            # Always track global step so epoch-level W&B logging stays monotonic
+            self._last_global_step = epoch * steps_per_epoch + step + 1
+
+            # Periodic logging
+            if (step + 1) % log_interval == 0 or step == steps_per_epoch - 1:
                 logger.info(
                     f"  Step {step + 1}/{steps_per_epoch} - Loss: {multi_task_loss.item():.4f} - Task Losses: {[f'{l.item():.4f}' for l in losses_tensor]}"
                 )
 
-                # Log to W&B every 100 steps
+                # Log to W&B at each log_interval
                 try:
                     import wandb
 
                     if wandb.run:
-                        # Create prefix for this preference vector's section
                         prefix = wandb_prefix if wandb_prefix else "train"
-
-                        log_dict = {
-                            f"{prefix}/step_loss": multi_task_loss.item(),
-                        }
-                        # Log individual task losses
+                        log_dict = {f"{prefix}/step_loss": multi_task_loss.item()}
                         for task_name, task_loss in zip(task_names, losses_tensor):
                             log_dict[f"{prefix}/task_loss/{task_name}"] = task_loss.item()
-
-                        # Calculate global step (step is 0-indexed, so add 1 for display)
-                        global_step = epoch * steps_per_epoch + step + 1
-                        wandb.log(log_dict, step=global_step)
-                        logger.debug(f"Logged to W&B: step={global_step}, metrics={list(log_dict.keys())}")
+                        wandb.log(log_dict, step=self._last_global_step)
+                        logger.debug(f"Logged to W&B: step={self._last_global_step}, metrics={list(log_dict.keys())}")
                 except (ImportError, AttributeError) as e:
                     logger.debug(f"W&B not available: {e}")
                 except Exception as e:
@@ -890,7 +907,7 @@ class BaseTrainingMethod(ABC):
                         f"{wandb_prefix}/loss": avg_loss,
                         f"{wandb_prefix}/learning_rate": optimizer.param_groups[0]["lr"],
                     }
-                    wandb.log(epoch_log_dict, step=epoch + 1)
+                    wandb.log(epoch_log_dict, step=getattr(self, "_last_global_step", epoch + 1))
                     logger.info(f"Logged epoch {epoch + 1} to W&B under '{wandb_prefix}'")
                 else:
                     logger.warning("W&B imported but wandb.run is None - logging disabled")
@@ -902,7 +919,8 @@ class BaseTrainingMethod(ABC):
             # Early stopping: evaluate on reference validation split
             if self.early_stopping and val_dataloaders is not None:
                 val_loss = self._compute_validation_loss(
-                    model, val_dataloaders, task_names, dataset_configs, preference_vector, device
+                    model, val_dataloaders, task_names, dataset_configs, preference_vector, device,
+                    **training_kwargs,
                 )
                 logger.info(
                     f"  Early stopping — val_loss: {val_loss:.4f}  "
@@ -914,7 +932,7 @@ class BaseTrainingMethod(ABC):
                     import wandb
 
                     if wandb.run:
-                        wandb.log({f"{wandb_prefix}/val_loss": val_loss}, step=epoch + 1)
+                        wandb.log({f"{wandb_prefix}/val_loss": val_loss}, step=getattr(self, "_last_global_step", epoch + 1))
                 except (ImportError, AttributeError, Exception):
                     pass
 

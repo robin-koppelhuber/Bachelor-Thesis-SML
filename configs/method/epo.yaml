@@ -8,7 +8,7 @@ method:
   params:
     # Training settings
     learning_rate: 2e-5
-    num_epochs: 5
+    num_epochs: 6
     batch_size: 32
     warmup_steps: 100
     weight_decay: 0.01

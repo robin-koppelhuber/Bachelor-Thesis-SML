@@ -387,6 +387,7 @@ class SelfPositionSearch(BaseTrainingMethod):
             f"α = {F.softmax(self._beta.detach(), dim=0).numpy().round(4).tolist()}"
         )
 
+        log_interval = max(10, steps_per_epoch // 4)  # ~4 log points per epoch regardless of length
         total_loss = 0.0
         num_steps = 0
 
@@ -481,8 +482,8 @@ class SelfPositionSearch(BaseTrainingMethod):
             total_loss += step_loss
             num_steps += 1
 
-            # Periodic logging
-            if (step + 1) % 100 == 0 or step == steps_per_epoch - 1:
+            # Periodic logging (~4 log points per epoch regardless of epoch length)
+            if (step + 1) % log_interval == 0 or step == steps_per_epoch - 1:
                 alpha_log = F.softmax(self._beta.detach(), dim=0).numpy().round(4).tolist()
                 logger.info(
                     f"  Step {step + 1}/{steps_per_epoch} — "

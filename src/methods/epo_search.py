@@ -294,13 +294,24 @@ class EPOFineTuning(BaseTrainingMethod):
         self,
         task_losses: torch.Tensor,
         preference_vector: torch.Tensor,
+        utopia_point: Optional[torch.Tensor] = None,
+        nadir_point: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
         """
-        Not used by EPO (which overrides _train_epoch).
-        Defined to satisfy the abstract method contract; falls back to weighted
-        sum so the method is usable if _train_epoch is ever bypassed.
+        Not called during normal EPO training (which overrides _train_epoch).
+        Used by _compute_validation_loss in base.py to evaluate the same
+        normalized objective EPO trains against.
+
+        When utopia/nadir are available (standard path), computes
+        preference-weighted normalized excess risk:
+            Σ_k w_k * (L_k - u_k) / (n_k - u_k)
+        Falls back to raw preference-weighted sum if not provided.
         """
+        if utopia_point is not None and nadir_point is not None:
+            scale = (nadir_point - utopia_point).clamp(min=1e-8)
+            deviations = (task_losses - utopia_point) / scale
+            return (preference_vector * deviations).sum()
         return (preference_vector * task_losses).sum()
 
     def _get_training_kwargs(
