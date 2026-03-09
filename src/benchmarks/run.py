@@ -128,7 +128,12 @@ def load_cached_trained_model_as_task_vector(
     device: torch.device,
 ) -> torch.Tensor:
     """
-    Load a cached trained model and return it as a flattened task vector
+    Load a cached trained model and return its full weights as a flattened vector.
+
+    Returns full trained weights (not deltas) so the benchmark runner can use
+    load_state_dict() directly instead of apply_task_vector(). This avoids the
+    random-init mismatch between the training base model and the evaluation base
+    model, which would otherwise corrupt the classification head.
 
     Args:
         cache_path: Path to cached model checkpoint
@@ -138,25 +143,13 @@ def load_cached_trained_model_as_task_vector(
         device: Device to load model on
 
     Returns:
-        Flattened task vector (trained_params - base_params)
+        Flattened full trained model weights (not task vector deltas)
     """
-    # Create base model and get its state
-    base_model = create_base_model_fn(max_num_labels)
-    base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
-
-    # Create trained model and load from cache
     trained_model = create_base_model_fn(max_num_labels)
     method._load_trained_model(trained_model, str(cache_path), device=device)
 
-    # Compute task vector (difference from base)
-    trained_state_dict = trained_model.state_dict()
-    task_vector_dict = {
-        name: param.cpu() - base_state_dict[name]
-        for name, param in trained_state_dict.items()
-        if name in base_state_dict
-    }
-
-    return flatten_task_vector(task_vector_dict)
+    trained_state_dict = {name: param.cpu() for name, param in trained_model.state_dict().items()}
+    return flatten_task_vector(trained_state_dict)
 
 
 def get_predictions_and_labels(
@@ -169,6 +162,7 @@ def get_predictions_and_labels(
     cfg: DictConfig,
     num_samples: Optional[int] = None,
     split_seed: Optional[int] = None,
+    absolute_weights: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Get model predictions and true labels for a task
@@ -177,7 +171,7 @@ def get_predictions_and_labels(
     Metrics are computed from predictions/labels without re-running inference.
 
     Args:
-        merged_task_vector: Merged task vector to evaluate
+        merged_task_vector: Merged task vector (delta) or full trained weights to evaluate
         task_name: Name of the task
         dataset_cfg: Dataset configuration
         tokenizer: Tokenizer
@@ -186,17 +180,26 @@ def get_predictions_and_labels(
         cfg: Full configuration
         num_samples: Optional limit on number of samples (for cache key)
         split_seed: Seed for the stratified 50/50 evaluation split (second half)
+        absolute_weights: If True, merged_task_vector contains full model weights (not deltas)
+            and is loaded directly via load_state_dict. Used for training-based methods to avoid
+            the random classification head initialization mismatch between the training base model
+            and the evaluation base model. If False (default), use apply_task_vector (add delta).
 
     Returns:
         Tuple of (predictions, labels) as numpy arrays
     """
     from src.benchmarks.reference_losses import get_evaluation_split
 
-    # Create base model
+    # Create base model and load weights
     merged_model = create_base_model_fn(num_labels=dataset_cfg.num_labels)
 
-    # Apply merged task vector
-    merged_model = apply_task_vector(merged_model, merged_task_vector, scaling=1.0)
+    if absolute_weights:
+        # Training-based: merged_task_vector contains the full trained model state dict.
+        # Load directly to avoid the random-init mismatch in the classification head.
+        merged_model.load_state_dict(merged_task_vector, strict=False)
+    else:
+        # Merging-based: merged_task_vector is a delta (fine_tuned - base); add to base.
+        merged_model = apply_task_vector(merged_model, merged_task_vector, scaling=1.0)
     merged_model.eval()
 
     # Load test dataset and apply stratified 50/50 split (second half for evaluation)
@@ -296,6 +299,7 @@ def perform_evaluation(
     create_base_model_fn,
     device: torch.device,
     cfg: DictConfig,
+    absolute_weights: bool = False,
 ) -> EvaluationResult:
     """
     Perform evaluation on a single task
@@ -312,6 +316,10 @@ def perform_evaluation(
         create_base_model_fn: Function to create base model
         device: Device to run on
         cfg: Full configuration
+        absolute_weights: If True, merged_task_vector contains full model weights
+            (not deltas) and will be loaded with load_state_dict instead of
+            apply_task_vector. Use for training-based methods to avoid classifier
+            init mismatch.
 
     Returns:
         Evaluation result
@@ -327,6 +335,7 @@ def perform_evaluation(
         cfg=cfg,
         num_samples=cfg.benchmark.evaluation.num_samples,
         split_seed=cfg.get("seed", 42),
+        absolute_weights=absolute_weights,
     )
 
     # Compute metrics from predictions
@@ -722,6 +731,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     model_id_param,
                     num_samples_param,
                     split_seed_param,
+                    absolute_weights_param,
                 ):
                     """Cached wrapper for prediction inference - Joblib handles caching automatically"""
                     logger.info(f"  Cache miss - running inference for {task}")
@@ -735,6 +745,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                         cfg=cfg,
                         num_samples=num_samples_param,
                         split_seed=split_seed_param,
+                        absolute_weights=absolute_weights_param,
                     )
 
                 # Create deterministic hash of task vector for cache key
@@ -752,6 +763,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     model_id_param=model_id,
                     num_samples_param=cfg.benchmark.evaluation.num_samples,
                     split_seed_param=cfg.get("seed", 42),
+                    absolute_weights_param=is_training_based,
                 )
 
                 # Compute metrics from cached predictions (fast step - NOT cached)
@@ -774,6 +786,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     create_base_model_fn=create_base_model,
                     device=device,
                     cfg=cfg,
+                    absolute_weights=is_training_based,
                 )
                 logger.info(f"  {result}")
 

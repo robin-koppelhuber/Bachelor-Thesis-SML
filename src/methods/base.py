@@ -1023,7 +1023,12 @@ class BaseTrainingMethod(ABC):
 
         for name, param in trained_state_dict.items():
             if name in base_state_dict:
-                task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
+                # Return full trained weights (not a delta from the training base model).
+                # The training base model has a randomly initialized classification head, so
+                # subtracting it and then adding to a DIFFERENT randomly initialized eval base
+                # would corrupt the head. The benchmark runner uses load_state_dict() directly
+                # for training-based methods (see run.py) instead of apply_task_vector().
+                task_vector_dict[name] = param.cpu()
 
         # 13. Flatten and return
         from src.benchmarks.run import flatten_task_vector

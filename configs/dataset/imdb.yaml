@@ -20,7 +20,7 @@ finetuned_checkpoint: textattack/roberta-base-imdb
 preprocessing:
   text_column: text
   label_column: label
-  max_length: 5000
+  max_length: 512
   truncation: true
   padding: max_length
 

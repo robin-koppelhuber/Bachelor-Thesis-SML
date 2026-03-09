@@ -46,4 +46,4 @@ method:
 
     # Early stopping
     early_stopping: true
-    patience: 3        # Epochs without improvement before stopping
+    patience: 2        # Epochs without improvement before stopping
