@@ -29,15 +29,22 @@ method:
     gradient_accumulation_steps: 1
     max_grad_norm: 1.0
 
-    # Memory optimization — EPO stores per-task gradients (~4×125MB); offload to CPU to avoid OOM
-    cpu_gradient_offload: true
+    # Memory optimization — EPO stores per-task gradients (~4×125MB).
+    # false (default): keep gradients on GPU; Gram matrix + combined gradient computed with
+    #   cuBLAS — eliminates ~2 GB PCIe transfer per step (~3-4 min saved over a full benchmark).
+    #   Requires ~5.3 GB VRAM (RoBERTa-base, T=4, bs=32).
+    # true: offload each gradient to CPU immediately after backward — caps GPU overhead to
+    #   one backward pass at a time; use on GPUs with <8 GB VRAM.
+    cpu_gradient_offload: false
     use_fp16: true   # Mixed precision training (~1.5-2× speedup; <0.1 pp accuracy loss on GLUE)
     dataloader_num_workers: 0
     max_samples_per_task: 6000  # ~187 steps/epoch at bs=32; covers CoLA/MRPC fully, ~35%/54% of QNLI/SST2 over 6 epochs
     use_streaming: false
 
     # Performance optimization
-    use_torch_compile: false
+    # torch.compile works well for EPO: forward+backward are standard transformer ops.
+    # Disabled for Self Position (in-place p.data reconstruction breaks compiled graphs).
+    use_torch_compile: true
 
     # Checkpoint management
     save_epoch_checkpoints: false

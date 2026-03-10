@@ -443,7 +443,7 @@ class EPOFineTuning(BaseTrainingMethod):
             # 2. Per-task forward + backward → gradients on CPU
             # ----------------------------------------------------------------
             task_losses_scalar: List[float] = []
-            task_grads_cpu: List[torch.Tensor] = []  # flat float32 CPU tensors
+            task_grads: List[torch.Tensor] = []  # flat float32; device = CPU or GPU per flag
 
             for task_name in task_names:
                 batch = task_batches[task_name]
@@ -472,64 +472,101 @@ class EPOFineTuning(BaseTrainingMethod):
                 # EPO uses standard (unscaled) backward passes.
                 # GradScaler is intentionally not used here: EPO requires per-task
                 # gradient values for the Gram matrix, and we immediately convert to
-                # float32 on CPU.  Using autocast (below) for the forward pass still
-                # gives fp16 activation memory savings without needing loss scaling.
+                # float32.  Using autocast for the forward pass still gives fp16
+                # activation memory savings without needing loss scaling.
                 loss.backward()
 
                 task_losses_scalar.append(loss.item())
 
-                # Collect gradient: CPU float32, flat vector
-                grad_flat = torch.cat(
-                    [p.grad.detach().cpu().float().flatten() for p in model.parameters() if p.grad is not None]
-                )
-                task_grads_cpu.append(grad_flat)
+                # Collect gradient as a flat float32 vector.
+                # cpu_gradient_offload=True: move to CPU immediately to cap GPU memory
+                #   (keeps peak GPU overhead to one backward pass at a time).
+                # cpu_gradient_offload=False: keep on GPU; Gram + combined grad computed
+                #   on GPU with cuBLAS — eliminates ~2 GB PCIe transfer per step.
+                if self.cpu_gradient_offload:
+                    grad_flat = torch.cat(
+                        [p.grad.detach().cpu().float().flatten() for p in model.parameters() if p.grad is not None]
+                    )
+                else:
+                    grad_flat = torch.cat(
+                        [p.grad.detach().float().flatten() for p in model.parameters() if p.grad is not None]
+                    )
+                task_grads.append(grad_flat)
                 optimizer.zero_grad(set_to_none=True)
 
             # ----------------------------------------------------------------
-            # 3. Build Gram matrix on CPU (numpy)
+            # 3. Build Gram matrix + compute combined gradient
             # ----------------------------------------------------------------
             losses_np = np.array(task_losses_scalar, dtype=np.float64)
-            # Stay in float32 to avoid doubling peak memory: 4×125M params×8B(float64) ≈ 4 GB
-            grads_np = np.stack([g.numpy() for g in task_grads_cpu])  # (T, n_params), float32
-            del task_grads_cpu  # free ~2 GB before Gram computation
 
-            if self.normalize_gradients:
-                norms = np.linalg.norm(grads_np, axis=1, keepdims=True)
-                norms = np.maximum(norms, 1e-8)
-                grads_for_gram = (grads_np / norms).astype(np.float32)
+            if self.cpu_gradient_offload:
+                # ── CPU / numpy path (original; low GPU memory) ──────────────
+                # Stay in float32: 4×125M params×8B(float64) ≈ 4 GB
+                grads_np = np.stack([g.numpy() for g in task_grads])  # (T, n_params), float32
+                del task_grads
+
+                if self.normalize_gradients:
+                    norms = np.linalg.norm(grads_np, axis=1, keepdims=True)
+                    norms = np.maximum(norms, 1e-8)
+                    grads_for_gram = (grads_np / norms).astype(np.float32)
+                else:
+                    grads_for_gram = grads_np
+
+                G = (grads_for_gram @ grads_for_gram.T).astype(np.float64)  # (T, T)
+                del grads_for_gram
+
+                # ── losses → EPO LP ──────────────────────────────────────────
+                if utopia_np is not None and nadir_np is not None:
+                    scale = np.maximum(nadir_np - utopia_np, 1e-8)
+                    epo_losses = (losses_np - utopia_np) / scale
+                else:
+                    epo_losses = losses_np
+
+                alpha = epo_lp.get_alpha(epo_losses, r, G)  # (T,)
+
+                combined_grad_cpu = torch.from_numpy((alpha.astype(np.float32) @ grads_np).copy())
+                del grads_np
+
+                idx = 0
+                for p in model.parameters():
+                    numel = p.numel()
+                    if p.requires_grad:
+                        p.grad = combined_grad_cpu[idx : idx + numel].reshape(p.shape).to(p.device)
+                    idx += numel
+
             else:
-                grads_for_gram = grads_np
+                # ── GPU / cuBLAS path (fast; needs ~2 GB extra VRAM) ─────────
+                grads_gpu = torch.stack(task_grads)  # (T, n_params), float32, GPU
+                del task_grads
 
-            G = (grads_for_gram @ grads_for_gram.T).astype(np.float64)  # (T, T) — tiny, ok to upcast
-            del grads_for_gram
+                if self.normalize_gradients:
+                    norms = grads_gpu.norm(dim=1, keepdim=True).clamp_(min=1e-8)
+                    grads_for_gram = grads_gpu / norms
+                else:
+                    grads_for_gram = grads_gpu
 
-            # ----------------------------------------------------------------
-            # 4. Normalise losses to excess risk (if reference points available)
-            # ----------------------------------------------------------------
-            if utopia_np is not None and nadir_np is not None:
-                scale = np.maximum(nadir_np - utopia_np, 1e-8)
-                epo_losses = (losses_np - utopia_np) / scale
-            else:
-                epo_losses = losses_np  # raw losses as fallback
+                # Only (T, T) = 4×4 floats transferred CPU↔GPU
+                G = (grads_for_gram @ grads_for_gram.T).cpu().double().numpy()
 
-            # ----------------------------------------------------------------
-            # 5. Solve EPO LP → mixing weights α
-            # ----------------------------------------------------------------
-            alpha = epo_lp.get_alpha(epo_losses, r, G)  # (T,)
+                # ── losses → EPO LP ──────────────────────────────────────────
+                if utopia_np is not None and nadir_np is not None:
+                    scale = np.maximum(nadir_np - utopia_np, 1e-8)
+                    epo_losses = (losses_np - utopia_np) / scale
+                else:
+                    epo_losses = losses_np
 
-            # ----------------------------------------------------------------
-            # 6. Compute combined gradient on CPU → load to model
-            # ----------------------------------------------------------------
-            combined_grad_cpu = torch.from_numpy((alpha.astype(np.float32) @ grads_np).copy())
-            del grads_np
+                alpha = epo_lp.get_alpha(epo_losses, r, G)  # (T,)
 
-            # Assign combined gradient back to model parameters on GPU
-            idx = 0
-            for p in model.parameters():
-                numel = p.numel()
-                if p.requires_grad:
-                    p.grad = combined_grad_cpu[idx : idx + numel].reshape(p.shape).to(p.device)
-                idx += numel
+                alpha_gpu = torch.tensor(alpha, dtype=torch.float32, device=grads_gpu.device)
+                combined_grad_gpu = alpha_gpu @ grads_gpu  # (n_params,) on GPU
+                del grads_gpu
+
+                idx = 0
+                for p in model.parameters():
+                    numel = p.numel()
+                    if p.requires_grad:
+                        p.grad = combined_grad_gpu[idx : idx + numel].reshape(p.shape)
+                    idx += numel
 
             # ----------------------------------------------------------------
             # 7. Gradient clipping, optimiser step, scheduler step
