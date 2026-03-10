@@ -327,6 +327,45 @@ def perform_evaluation(
     return result
 
 
+def _run_inference_for_task(
+    # ── Cache key args (plain types, hashed by Joblib) ──────────────────────
+    task_vec_hash: str,
+    method_name: str,
+    pref_vec_tuple: tuple,
+    task_name: str,
+    model_id_param: Optional[str],
+    num_samples_param: Optional[int],
+    split_seed_param: int,
+    # ── Runtime args (excluded from cache key via ignore= in memory.cache()) ─
+    merged_task_vector: Dict[str, torch.Tensor],
+    dataset_cfg,  # DictConfig — ignored from hash
+    tokenizer,
+    create_base_model_fn,
+    device: torch.device,
+    cfg,  # DictConfig — ignored from hash
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Run model inference for a single (merged model, task) pair.
+
+    This function is intentionally module-level so Joblib can hash it by source
+    code only.  The heavy runtime args (merged_task_vector, tokenizer, etc.) are
+    listed in `ignore=` when memory.cache() is applied in run_benchmark(), so
+    only the plain-type identification args determine the cache key.
+    """
+    logger.info(f"  Cache miss - running inference for {task_name}")
+    return get_predictions_and_labels(
+        merged_task_vector=merged_task_vector,
+        task_name=task_name,
+        dataset_cfg=dataset_cfg,
+        tokenizer=tokenizer,
+        create_base_model_fn=create_base_model_fn,
+        device=device,
+        cfg=cfg,
+        num_samples=num_samples_param,
+        split_seed=split_seed_param,
+    )
+
+
 def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     """
     Run benchmark
@@ -531,6 +570,16 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
     all_results = []
 
+    # Build the cached inference function once (outside all loops).
+    # The heavy runtime args are listed in ignore= so only the plain-type
+    # identification args (task_vec_hash, method_name, …) determine the cache key.
+    if cache_enabled:
+        _RUNTIME_ARGS = [
+            "merged_task_vector", "dataset_cfg", "tokenizer",
+            "create_base_model_fn", "device", "cfg",
+        ]
+        _cached_inference = get_memory().cache(_run_inference_for_task, ignore=_RUNTIME_ARGS)
+
     for pref_idx, preference_vector in enumerate(cfg.benchmark.preference_vectors):
         logger.info(f"\n{'=' * 80}")
         logger.info(f"Preference vector {pref_idx + 1}: {preference_vector}")
@@ -693,37 +742,8 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             dataset_cfg = dataset_configs[task_name]
 
             if cache_enabled:
-                # Use Joblib-cached evaluation
-                memory = get_memory()
-
                 # For training-based methods, include model identifier in cache key
                 model_id = config_hash if is_training_based else None
-
-                # Create cached version of get_predictions_and_labels
-                # This caches the expensive inference step separately from metrics computation
-                @memory.cache
-                def _cached_get_predictions(
-                    task_vec_hash,  # Hash of task vector for cache key
-                    method_name,
-                    pref_vec_tuple,
-                    task,
-                    model_id_param,
-                    num_samples_param,
-                    split_seed_param,
-                ):
-                    """Cached wrapper for prediction inference - Joblib handles caching automatically"""
-                    logger.info(f"  Cache miss - running inference for {task}")
-                    return get_predictions_and_labels(
-                        merged_task_vector=merged_task_vector,
-                        task_name=task,
-                        dataset_cfg=dataset_cfg,
-                        tokenizer=tokenizer,
-                        create_base_model_fn=create_base_model,
-                        device=device,
-                        cfg=cfg,
-                        num_samples=num_samples_param,
-                        split_seed=split_seed_param,
-                    )
 
                 # Create deterministic hash of task vector for cache key
                 import hashlib
@@ -731,15 +751,23 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 task_vec_bytes = str(sorted(merged_task_vector.items())).encode()
                 task_vec_hash = hashlib.md5(task_vec_bytes).hexdigest()[:12]
 
-                # Get predictions from cache (inference step)
-                predictions, labels = _cached_get_predictions(
+                # Get predictions from cache (_cached_inference is a module-level
+                # function so Joblib hashes it by source code only; heavy runtime
+                # args are excluded via ignore= set up before the loop)
+                predictions, labels = _cached_inference(
                     task_vec_hash=task_vec_hash,
                     method_name=cfg.method.name,
                     pref_vec_tuple=tuple(preference_vector),
-                    task=task_name,
+                    task_name=task_name,
                     model_id_param=model_id,
                     num_samples_param=cfg.benchmark.evaluation.num_samples,
                     split_seed_param=cfg.get("seed", 42),
+                    merged_task_vector=merged_task_vector,
+                    dataset_cfg=dataset_cfg,
+                    tokenizer=tokenizer,
+                    create_base_model_fn=create_base_model,
+                    device=device,
+                    cfg=cfg,
                 )
 
                 # Compute metrics from cached predictions (fast step - NOT cached)

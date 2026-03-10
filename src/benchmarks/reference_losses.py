@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from transformers import default_data_collator
 
@@ -55,7 +55,8 @@ def compute_reference_losses(
     """
     task_names_tuple = tuple(task_names)
     model_id = cfg.model.hf_model_id
-    dataset_configs = {task: cfg.datasets[task] for task in task_names}
+    # Convert DictConfig → plain dict so Joblib can hash deterministically across runs
+    dataset_configs = {task: OmegaConf.to_container(cfg.datasets[task], resolve=True) for task in task_names}
     reference_num_samples = cfg.benchmark.evaluation.get("reference_num_samples", None)
     split_seed = cfg.get("seed", 42)
     paths = {
@@ -77,7 +78,7 @@ def compute_reference_losses(
         paths=paths,
         torch_dtype=torch_dtype,
         batch_size=batch_size,
-        device=device,
+        device_str=str(device),
     )
 
 
@@ -85,15 +86,18 @@ def compute_reference_losses(
 def _compute_reference_losses_cached(
     task_names_tuple: tuple,
     model_id: str,
-    dataset_configs: dict,
+    dataset_configs: dict,  # plain dict (converted from DictConfig for stable hashing)
     reference_num_samples: Optional[int],
     split_seed: int,
     paths: dict,
     torch_dtype: str,
     batch_size: int,
-    device: torch.device,
+    device_str: str,  # str instead of torch.device for stable Joblib hashing
 ) -> Dict[str, Dict[str, float]]:
     """Cached implementation. Cache invalidates when any argument changes."""
+    device = torch.device(device_str)
+    # Restore DictConfig for attribute-style access; plain dicts were only needed for hashing
+    dataset_configs = {task: OmegaConf.create(cfg_dict) for task, cfg_dict in dataset_configs.items()}
     task_names = list(task_names_tuple)
 
     logger.info("Cache miss — computing reference losses from scratch")

@@ -203,6 +203,8 @@ def main(cfg: DictConfig) -> None:
 
     except Exception as e:
         logger.error(f"Benchmark failed with error: {e}")
+        if wandb_run:
+            finish_wandb()
         raise
 
     # Cleanup

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from src.data.loaders import load_hf_dataset, preprocess_dataset
@@ -55,8 +55,8 @@ def compute_reference_points(
     num_samples = cfg.benchmark.evaluation.num_samples
 
     # Extract only the critical config parameters needed for computation
-    # This ensures cache doesn't invalidate on irrelevant config changes
-    dataset_configs = {task: cfg.datasets[task] for task in task_names}
+    # Convert DictConfig → plain dict so Joblib can hash deterministically across runs
+    dataset_configs = {task: OmegaConf.to_container(cfg.datasets[task], resolve=True) for task in task_names}
     paths = {
         "hf_models_cache_base": str(cfg.paths.hf_models_cache_base) if cfg.paths.hf_models_cache_base else None,
         "hf_models_cache_finetuned": str(cfg.paths.hf_models_cache_finetuned)
@@ -81,7 +81,7 @@ def compute_reference_points(
         batch_size=batch_size,
         use_torch_compile=use_torch_compile,
         torch_compile_mode_eval=torch_compile_mode_eval,
-        device=device,
+        device_str=str(device),
     )
 
 
@@ -91,13 +91,13 @@ def _compute_reference_points_cached(
     metrics_tuple: tuple,
     model_id: str,
     num_samples: int,
-    dataset_configs: dict,
+    dataset_configs: dict,  # plain dict (converted from DictConfig for stable hashing)
     paths: dict,
     torch_dtype: str,
     batch_size: int,
     use_torch_compile: bool,
     torch_compile_mode_eval: str,
-    device: torch.device,
+    device_str: str,  # str instead of torch.device for stable Joblib hashing
 ) -> Dict[str, Dict[str, float]]:
     """
     Cached implementation of reference points computation
@@ -121,6 +121,9 @@ def _compute_reference_points_cached(
     - Random seed changes
     - Other irrelevant config changes
     """
+    device = torch.device(device_str)
+    # Restore DictConfig for attribute-style access; plain dicts were only needed for hashing
+    dataset_configs = {task: OmegaConf.create(cfg_dict) for task, cfg_dict in dataset_configs.items()}
     task_names = list(task_names_tuple)
     metrics = list(metrics_tuple)
 
