@@ -31,7 +31,7 @@ method:
     use_torch_compile: false
 
     # Memory optimization
-    max_samples_per_task: 20000  # ~625 steps/epoch at bs=32; covers CoLA/MRPC fully, 17%/29% of QNLI/SST2
+    max_samples_per_task: 6000  # ~187 steps/epoch at bs=32; covers CoLA/MRPC fully, ~35%/54% of QNLI/SST2 over 6 epochs
     dataloader_num_workers: 0
     use_streaming: false
 

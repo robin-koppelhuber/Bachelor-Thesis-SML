@@ -1,0 +1,68 @@
+# @package _global_
+benchmark:
+  name: qnli_mrpc_sweep
+  description: "Pairwise sweep of the MRPC–QNLI conflict axis to map the Pareto frontier and locate the MRPC collapse threshold"
+
+  # Two-task benchmark: isolates the MRPC–QNLI conflict without COLA/SST2 confounders.
+  # Complement to glue-2-label (4-task): that benchmark characterizes corners; this one
+  # densely samples the pairwise tradeoff curve.
+  #
+  # Tasks are sorted alphabetically — index mapping: 0=mrpc, 1=qnli
+  tasks:
+    - mrpc
+    - qnli
+
+  # Preference vectors: [w_mrpc, w_qnli], must sum to 1.0.
+  # Sweep from MRPC-dominant → QNLI-dominant in steps of 0.10.
+  # Anchors at [0.9, 0.1] and [0.1, 0.9] cover near-recovery behaviour without
+  # duplicating the single-task recovery benchmarks (recovery-mrpc / recovery-qnli).
+  preference_vectors:
+    - [0.90, 0.10]   # MRPC dominant
+    - [0.80, 0.20]
+    - [0.70, 0.30]
+    - [0.60, 0.40]
+    - [0.50, 0.50] 
+    - [0.40, 0.60]
+    - [0.30, 0.70]   # collapse expected somewhere here
+    - [0.20, 0.80]
+    - [0.10, 0.90]   # QNLI dominant
+
+  # Evaluation settings
+  evaluation:
+    batch_size: 32
+    num_samples: null
+    reference_num_samples: null
+    metrics:
+      - name: accuracy
+        plots: all
+      - name: f1_macro
+        plots:
+          - heatmap
+          - parallel_coordinates
+          - distance_to_utopia
+          - performance_recovery
+          - pareto_frontiers
+          - normalized_skill_retention
+          - normalized_pareto_frontiers
+      - name: f1_weighted
+        plots: []
+      - name: f1_micro
+        plots: []
+      - name: precision_macro
+        plots: []
+      - name: recall_macro
+        plots: []
+      - name: cohen_kappa
+        plots:
+          - heatmap
+          - pareto_frontiers
+      - name: mcc
+        plots:
+          - heatmap
+          - distance_to_utopia
+    cross_metric_plots: []
+
+  mode: train_eval
+  cache_enabled: true
+  force_retrain: false
+  clear_cache: false

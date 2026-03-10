@@ -483,12 +483,8 @@ class SelfPositionSearch(BaseTrainingMethod):
             alpha.backward(gradient=grad_alpha)
             self._alpha_optimizer.step()
 
-            # ----------------------------------------------------------------
-            # 8. Compatibility: step scheduler and keep scaler state in sync
-            # ----------------------------------------------------------------
-            scheduler.step()
-            if scaler is not None:
-                scaler.update()
+            # Self Position updates model params manually via _set_model_to_merged,
+            # so the base-class optimizer/scheduler/scaler are not used here.
 
             step_loss = float(combined_loss.item())
             total_loss += step_loss

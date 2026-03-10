@@ -569,6 +569,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     logger.info("=" * 80)
 
     all_results = []
+    checkpoint_manifest: List[Dict] = []  # manifest entries for training-based methods
 
     # Build the cached inference function once (outside all loops).
     # The heavy runtime args are listed in ignore= so only the plain-type
@@ -643,6 +644,19 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             cache_dir.mkdir(parents=True, exist_ok=True)
             model_filename = f"{cfg.method.name}_{config_hash}.safetensors"
             model_cache_path = cache_dir / model_filename
+
+            # Record manifest entry for this checkpoint
+            checkpoint_manifest.append(
+                {
+                    "method": cfg.method.name,
+                    "benchmark": cfg.benchmark.name,
+                    "tasks": sorted(OmegaConf.to_container(cfg.benchmark.tasks, resolve=True)),
+                    "preference_vector": preference_array.tolist(),
+                    "config_hash": config_hash,
+                    "checkpoint_file": model_filename,
+                    "checkpoint_path": str(model_cache_path),
+                }
+            )
 
             # Determine execution mode
             mode = cfg.benchmark.get("mode", "train_eval")
@@ -808,6 +822,30 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         logger.info(f"Results for preference vector {preference_vector}:")
         for task_name, result in task_results.items():
             logger.info(f"  {task_name}: {result.metrics}")
+
+    # Write checkpoint manifest (training-based methods only)
+    if checkpoint_manifest:
+        import csv
+        import json as _json
+
+        manifest_dir = Path(cfg.paths.visualizations_dir)
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest_json = manifest_dir / "checkpoint_manifest.json"
+        with open(manifest_json, "w") as f:
+            _json.dump(checkpoint_manifest, f, indent=2)
+
+        manifest_csv = manifest_dir / "checkpoint_manifest.csv"
+        with open(manifest_csv, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["method", "benchmark", "tasks", "preference_vector", "config_hash", "checkpoint_file", "checkpoint_path"],
+            )
+            writer.writeheader()
+            for entry in checkpoint_manifest:
+                writer.writerow({**entry, "tasks": str(entry["tasks"]), "preference_vector": str(entry["preference_vector"])})
+
+        logger.info(f"✓ Saved checkpoint manifest to {manifest_dir}")
 
     # Step 5: Generate visualizations
     logger.info("\n" + "=" * 80)
