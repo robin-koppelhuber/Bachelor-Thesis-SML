@@ -50,12 +50,14 @@ def log_figures_to_wandb(
             logger.warning("W&B run not initialized, skipping figure logging")
             return
 
+        from PIL import Image as PILImage
+
         log_dict = {}
         for name, fig in figures.items():
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
             buf.seek(0)
-            log_dict[f"viz/{name}"] = wandb.Image(buf)
+            log_dict[f"viz/{name}"] = wandb.Image(PILImage.open(buf))
             plt.close(fig)  # Close figure to free memory
 
         wandb.log(log_dict, step=step)
@@ -141,11 +143,16 @@ def create_visualization_artifact(
             metadata=metadata,
         )
 
+        seen_names: set = set()
         for plot_file in plot_files:
-            if plot_file.exists():
-                artifact.add_file(str(plot_file))
-            else:
+            if not plot_file.exists():
                 logger.warning(f"Plot file not found: {plot_file}")
+                continue
+            if plot_file.name in seen_names:
+                logger.warning(f"Skipping duplicate artifact entry: {plot_file.name}")
+                continue
+            seen_names.add(plot_file.name)
+            artifact.add_file(str(plot_file))
 
         wandb.log_artifact(artifact)
         logger.info(f"Created and logged artifact '{artifact_name}' with {len(plot_files)} files")

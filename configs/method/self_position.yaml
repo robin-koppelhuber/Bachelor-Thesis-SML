@@ -14,6 +14,12 @@ method:
     ties_preprocessing: false
     ties_k: 0.2              # Top-k fraction to keep during trimming
 
+    # Augmented Chebyshev scalarization (mirrors chebyshev_ft.py)
+    # combined_loss = max_k{r_k · L̃_k} + epsilon · Σ_k{r_k · L̃_k}
+    # where L̃_k = (L_k − utopia_k) / (nadir_k − utopia_k)
+    epsilon: 0.001
+    use_augmented: true
+
     # Preference convention: false = high r_k means more important task k
     invert_preference: false
 

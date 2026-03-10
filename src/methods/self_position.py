@@ -61,6 +61,8 @@ class SelfPositionSearch(BaseTrainingMethod):
         ties_preprocessing: bool = False,
         ties_k: float = 0.2,
         invert_preference: bool = False,
+        epsilon: float = 0.001,
+        use_augmented: bool = True,
         **kwargs,
     ):
         """
@@ -72,6 +74,10 @@ class SelfPositionSearch(BaseTrainingMethod):
             ties_k: Top-k fraction to keep in TIES trimming. Default 0.2.
             invert_preference: If True, transform r → normalise(1/r) before use.
                 For ablations when the opposite preference convention is needed.
+            epsilon: Augmentation weight for the sum term in augmented Chebyshev.
+                Mirrors ChebyshevFT.epsilon. Default 0.001.
+            use_augmented: If True, use augmented Chebyshev (max + epsilon*sum).
+                If False, use pure Chebyshev (max only). Default True.
             **kwargs: Forwarded to BaseTrainingMethod (num_epochs, batch_size, etc.).
         """
         super().__init__(**kwargs)
@@ -79,6 +85,8 @@ class SelfPositionSearch(BaseTrainingMethod):
         self.ties_preprocessing = ties_preprocessing
         self.ties_k = ties_k
         self.invert_preference = invert_preference
+        self.epsilon = epsilon
+        self.use_augmented = use_augmented
 
         # Instance state — initialized per training run in _get_training_kwargs
         self._beta: Optional[torch.Tensor] = None
@@ -86,6 +94,7 @@ class SelfPositionSearch(BaseTrainingMethod):
         self._task_vectors_cpu: Optional[Dict[str, torch.Tensor]] = None
         self._base_params_cpu: Optional[torch.Tensor] = None
         self._task_names_ordered: Optional[List[str]] = None
+        self._reference_losses: Optional[Dict] = None  # {task: {"utopia": float, "nadir": float}}
 
         # Captured in overridden train() for use in _load_task_vectors
         self._base_model_id: Optional[str] = None
@@ -144,10 +153,17 @@ class SelfPositionSearch(BaseTrainingMethod):
         self._beta = torch.zeros(T, requires_grad=True)
         self._alpha_optimizer = torch.optim.Adam([self._beta], lr=self.lr_alpha)
 
+        # Store reference losses for Chebyshev normalization in _train_epoch
+        self._reference_losses = reference_losses  # {task: {"utopia": float, "nadir": float}}
+
         logger.info(
             f"Self Position init: T={T}, lr_alpha={self.lr_alpha}, TIES preprocessing={self.ties_preprocessing}"
         )
         logger.info(f"  Initial α = [{1 / T:.4f}] * {T}  (from β=0, softmax)")
+        if self._reference_losses:
+            logger.info("  Chebyshev normalization: using reference utopia/nadir losses")
+        else:
+            logger.warning("  No reference_losses provided — falling back to unnormalized losses (collapse risk)")
 
         return {"finetuned_model_cache_dir": cache_dir}
 
@@ -353,7 +369,9 @@ class SelfPositionSearch(BaseTrainingMethod):
         For each step:
           1. Compute α = softmax(β)  [with autograd graph from β]
           2. Set model params to base + Σ α_k τ_k  [detached α — no grad through params]
-          3. T forward passes → per-task losses; accumulate combined_loss = Σ r_k L_k
+          3. T forward passes → per-task losses; augmented Chebyshev:
+             combined_loss = max_k{r_k · L̃_k} + ε · Σ_k{r_k · L̃_k}
+             where L̃_k = (L_k − utopia_k) / (nadir_k − utopia_k)
           4. combined_loss.backward() → ∇_θ(Σ r_k L_k) in model.parameters().grad
           5. g = flat_gradient(model) on CPU float32
           6. grad_α_j = ⟨g, τ_j⟩  for j = 1..T  (T CPU dot products)
@@ -436,9 +454,9 @@ class SelfPositionSearch(BaseTrainingMethod):
             optimizer.zero_grad(set_to_none=True)
 
             # ----------------------------------------------------------------
-            # 3. Forward passes: accumulate combined_loss = Σ r_k L_k
+            # 3. Forward passes: collect per-task losses
             # ----------------------------------------------------------------
-            combined_loss = None
+            task_losses_list: List[torch.Tensor] = []
             task_losses_scalar: List[float] = []
 
             for k, task_name in enumerate(task_names):
@@ -454,11 +472,36 @@ class SelfPositionSearch(BaseTrainingMethod):
                 batch["labels"] = labels  # restore for potential reuse
 
                 task_losses_scalar.append(loss_k.item())
-                rk = float(r[k])
-                combined_loss = rk * loss_k if combined_loss is None else combined_loss + rk * loss_k
+                task_losses_list.append(loss_k)
 
             # ----------------------------------------------------------------
-            # 4. Single backward pass → ∇_θ(Σ r_k L_k)
+            # 3b. Augmented Chebyshev scalarization (mirrors chebyshev_ft.py)
+            #     combined_loss = max_k{r_k · L̃_k} + ε · Σ_k{r_k · L̃_k}
+            #     where L̃_k = (L_k − utopia_k) / (nadir_k − utopia_k)
+            # ----------------------------------------------------------------
+            task_losses_tensor = torch.stack(task_losses_list)  # (T,) on GPU
+            r_tensor = torch.tensor(r, dtype=task_losses_tensor.dtype, device=task_losses_tensor.device)
+
+            if self._reference_losses and all(t in self._reference_losses for t in task_names):
+                utopia = torch.tensor(
+                    [self._reference_losses[t]["utopia"] for t in task_names],
+                    dtype=task_losses_tensor.dtype, device=task_losses_tensor.device,
+                )
+                nadir = torch.tensor(
+                    [self._reference_losses[t]["nadir"] for t in task_names],
+                    dtype=task_losses_tensor.dtype, device=task_losses_tensor.device,
+                )
+                deviations = (task_losses_tensor - utopia) / (nadir - utopia).clamp(min=1e-8)
+            else:
+                deviations = task_losses_tensor  # fallback: no reference losses available
+
+            weighted = r_tensor * deviations
+            combined_loss = weighted.max()
+            if self.use_augmented:
+                combined_loss = combined_loss + self.epsilon * weighted.sum()
+
+            # ----------------------------------------------------------------
+            # 4. Single backward pass → ∇_θ(combined_loss)
             # Self Position intentionally bypasses GradScaler: we need the raw
             # float32 gradient values for the dot products with task vectors.
             # autocast is used only for forward memory savings.
