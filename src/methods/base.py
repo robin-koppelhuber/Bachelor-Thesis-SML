@@ -1006,9 +1006,14 @@ class BaseTrainingMethod(ABC):
             else:
                 logger.info(f"Restored best model from completed training (val_loss={best_val_loss:.4f})")
 
+        # 12. Compute task vector from trained model (captured here so _save_trained_model
+        #     can reuse the same state dict without a second GPU→CPU copy).
+        logger.info("\nComputing task vector from trained model...")
+        trained_state_dict = model.state_dict()
+
         # 10. Save final trained model if requested
         if save_path:
-            self._save_trained_model(model, save_path)
+            self._save_trained_model(trained_state_dict, save_path)
 
             # Upload to W&B if enabled
             try:
@@ -1040,9 +1045,6 @@ class BaseTrainingMethod(ABC):
             logger.info("\nCleaning up epoch checkpoints after successful training...")
             self._cleanup_old_checkpoints(epoch_checkpoint_dir, model_identifier, keep_epoch=None)
 
-        # 12. Compute task vector from trained model
-        logger.info("\nComputing task vector from trained model...")
-        trained_state_dict = model.state_dict()
         task_vector_dict = {}
 
         for name, param in trained_state_dict.items():
@@ -1059,14 +1061,14 @@ class BaseTrainingMethod(ABC):
 
         return flattened
 
-    def _save_trained_model(self, model: torch.nn.Module, save_path: str) -> None:
+    def _save_trained_model(self, state_dict: dict, save_path: str) -> None:
         """
         Save trained model to disk
 
         Saves only the model state dict in an efficient format (safetensors).
 
         Args:
-            model: Trained model to save
+            state_dict: Model state dict (already captured by caller to avoid duplicate copy)
             save_path: Path to save the model (should end with .safetensors)
         """
         from pathlib import Path
@@ -1080,13 +1082,13 @@ class BaseTrainingMethod(ABC):
         try:
             from safetensors.torch import save_file
 
-            state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
-            save_file(state_dict, str(save_path))
+            cpu_state_dict = {k: v.cpu() for k, v in state_dict.items()}
+            save_file(cpu_state_dict, str(save_path))
             logger.info("  ✓ Model saved successfully")
         except ImportError:
             # Fallback to torch.save if safetensors not available
             logger.warning("  safetensors not available, using torch.save instead")
-            torch.save(model.state_dict(), save_path)
+            torch.save(state_dict, save_path)
             logger.info("  ✓ Model saved successfully (torch format)")
 
     def _load_trained_model(

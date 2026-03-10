@@ -747,6 +747,14 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
         merged_task_vector = unflatten_task_vector(merged_flat, task_vector_template)
 
+        # Pre-compute cache key components once per preference vector (not per task).
+        if cache_enabled:
+            import hashlib
+
+            model_id = config_hash if is_training_based else None
+            task_vec_bytes = str(sorted(merged_task_vector.items())).encode()
+            task_vec_hash = hashlib.md5(task_vec_bytes).hexdigest()[:12]
+
         # For each task, evaluate the merged model (with Joblib caching)
         task_results = {}
 
@@ -756,14 +764,6 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             dataset_cfg = dataset_configs[task_name]
 
             if cache_enabled:
-                # For training-based methods, include model identifier in cache key
-                model_id = config_hash if is_training_based else None
-
-                # Create deterministic hash of task vector for cache key
-                import hashlib
-
-                task_vec_bytes = str(sorted(merged_task_vector.items())).encode()
-                task_vec_hash = hashlib.md5(task_vec_bytes).hexdigest()[:12]
 
                 # Get predictions from cache (_cached_inference is a module-level
                 # function so Joblib hashes it by source code only; heavy runtime
