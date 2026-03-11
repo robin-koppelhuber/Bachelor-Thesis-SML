@@ -1,16 +1,17 @@
 # @package _global_
 method:
-  name: self_position
+  name: layerwise_self_position
   params:
-    # Adam LR on mixing logits β (matches paper arXiv:2410.15035)
+    # Adam LR on mixing logits β.
+    # Layer-wise β has L×T params (L≈14 for RoBERTa-base); Adam adapts per-param,
+    # so the same lr as global Self Position works well as a starting point.
     lr_alpha: 5.0e-3
 
-    # Layer-wise mixing: if true, β ∈ R^{L×T} (one softmax per layer group).
-    # See layerwise_self_position.yaml for the layer-wise variant.
-    layerwise: false
+    # Enable per-layer mixing: β ∈ R^{L×T}
+    layerwise: true
 
     # Training settings
-    num_epochs: 5            # β has only T params; Adam at lr=5e-3 converges in ~1-2 epochs; early stopping provides safety net
+    num_epochs: 5
     batch_size: 32
 
     # TIES preprocessing (optional): apply trim + global sign + disjoint mask
@@ -36,12 +37,11 @@ method:
     max_grad_norm: 0.0
     gradient_accumulation_steps: 1
 
-    # Disable torch.compile (Self Position reconstructs params in-place each step;
-    # compile does not help and may conflict with dynamic param assignment)
+    # Disable torch.compile (Self Position reconstructs params in-place each step)
     use_torch_compile: false
 
     # Memory optimization
-    max_samples_per_task: 6000  # ~187 steps/epoch at bs=32; covers CoLA/MRPC fully, ~35%/54% of QNLI/SST2 over 6 epochs
+    max_samples_per_task: 6000
     dataloader_num_workers: 0
     use_streaming: false
 
@@ -52,4 +52,4 @@ method:
 
     # Early stopping
     early_stopping: true
-    patience: 2        # Epochs without improvement before stopping
+    patience: 2

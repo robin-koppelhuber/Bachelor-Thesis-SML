@@ -19,6 +19,13 @@ products with the task vectors — cheaper than EPO.
 Adam is used on β (unconstrained logits); softmax ensures α ∈ Δ_T at all times
 without explicit simplex projection.
 
+Layer-wise variant (layerwise=True):
+    β ∈ R^{L×T} — one softmax per layer group (embeddings / encoder.layer.0-11 /
+    pooler / classifier).  Gradient:
+        ∇_α_{l,k} L = ⟨∇_θ_l L, τ_{l,k}⟩   (dot product restricted to layer l)
+    Hypothesis: later layers adopt sharper task-specific mixing; early layers stay
+    near uniform (shared syntax/representations).  Same Chebyshev objective.
+
 Optional TIES preprocessing (all α-independent, precomputed once):
   1. Trim: per-task top-k% by magnitude
   2. Elect global sign: γ_p = sign(Σ_k τ̂_k_p)  [unweighted — no α dependency]
@@ -29,8 +36,9 @@ Reference: "Improving General Text Embedding Model: Tackling Task Conflict and
 """
 
 import logging
+import re
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -42,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 
 @MethodRegistry.register("self_position")
+@MethodRegistry.register("layerwise_self_position")
 class SelfPositionSearch(BaseTrainingMethod):
     """
     Self Position Search: preference-weighted convex hull optimizer.
@@ -58,6 +67,7 @@ class SelfPositionSearch(BaseTrainingMethod):
     def __init__(
         self,
         lr_alpha: float = 5e-3,
+        layerwise: bool = False,
         ties_preprocessing: bool = False,
         ties_k: float = 0.2,
         invert_preference: bool = False,
@@ -68,6 +78,9 @@ class SelfPositionSearch(BaseTrainingMethod):
         """
         Args:
             lr_alpha: Adam learning rate for mixing logits β. Default 5e-3 (paper).
+            layerwise: If True, use per-layer mixing — β ∈ R^{L×T} where L is the
+                number of named module groups (embeddings / encoder layers / classifier).
+                Each layer gets its own softmax over tasks. Default False.
             ties_preprocessing: If True, apply TIES steps 1–3 (trim + global sign
                 election + disjoint mask) to task vectors before optimization.
                 All steps are α-independent and can be precomputed once.
@@ -82,6 +95,7 @@ class SelfPositionSearch(BaseTrainingMethod):
         """
         super().__init__(**kwargs)
         self.lr_alpha = lr_alpha
+        self.layerwise = layerwise
         self.ties_preprocessing = ties_preprocessing
         self.ties_k = ties_k
         self.invert_preference = invert_preference
@@ -95,6 +109,7 @@ class SelfPositionSearch(BaseTrainingMethod):
         self._base_params_cpu: Optional[torch.Tensor] = None
         self._task_names_ordered: Optional[List[str]] = None
         self._reference_losses: Optional[Dict] = None  # {task: {"utopia": float, "nadir": float}}
+        self._layer_ranges: Optional[List[Tuple[int, int]]] = None  # (start, end) per layer group
 
         # Captured in overridden train() for use in _load_task_vectors
         self._base_model_id: Optional[str] = None
@@ -145,27 +160,105 @@ class SelfPositionSearch(BaseTrainingMethod):
         T = len(task_names)
         self._task_names_ordered = list(task_names)
 
-        # Reset task vectors — loaded lazily on first _train_epoch call
+        # Reset task vectors and layer ranges — loaded lazily on first _train_epoch call
         self._task_vectors_cpu = None
         self._base_params_cpu = None
+        self._layer_ranges = None
 
-        # β initialized to zeros → α = softmax(0) = [1/T, ..., 1/T]
-        self._beta = torch.zeros(T, requires_grad=True)
-        self._alpha_optimizer = torch.optim.Adam([self._beta], lr=self.lr_alpha)
+        if self.layerwise:
+            # β size depends on L (number of layer groups), which is only known after the
+            # model is loaded. Defer to _load_task_vectors → _init_beta.
+            self._beta = None
+            self._alpha_optimizer = None
+        else:
+            # β initialized to zeros → α = softmax(0) = [1/T, ..., 1/T]
+            self._beta = torch.zeros(T, requires_grad=True)
+            self._alpha_optimizer = torch.optim.Adam([self._beta], lr=self.lr_alpha)
 
         # Store reference losses for Chebyshev normalization in _train_epoch
         self._reference_losses = reference_losses  # {task: {"utopia": float, "nadir": float}}
 
         logger.info(
-            f"Self Position init: T={T}, lr_alpha={self.lr_alpha}, TIES preprocessing={self.ties_preprocessing}"
+            f"Self Position init: T={T}, lr_alpha={self.lr_alpha}, "
+            f"layerwise={self.layerwise}, TIES preprocessing={self.ties_preprocessing}"
         )
-        logger.info(f"  Initial α = [{1 / T:.4f}] * {T}  (from β=0, softmax)")
+        if self.layerwise:
+            logger.info(f"  Initial β: deferred — will be shaped (L, {T}) after model load")
+        else:
+            logger.info(f"  Initial α = [{1 / T:.4f}] * {T}  (from β=0, softmax)")
         if self._reference_losses:
             logger.info("  Chebyshev normalization: using reference utopia/nadir losses")
         else:
             logger.warning("  No reference_losses provided — falling back to unnormalized losses (collapse risk)")
 
         return {"finetuned_model_cache_dir": cache_dir}
+
+    # ------------------------------------------------------------------
+    # Beta / optimizer initialization
+    # ------------------------------------------------------------------
+
+    def _init_beta(self, T: int) -> None:
+        """
+        Initialize mixing logits β and Adam optimizer.
+
+        For global Self Position: β ∈ ℝ^T (one weight per task).
+        For layer-wise: β ∈ ℝ^{L×T} (one weight per layer per task).
+        Call after _build_layer_ranges so L is known.
+        """
+        if self.layerwise:
+            L = len(self._layer_ranges)
+            self._beta = torch.zeros(L, T, requires_grad=True)
+            logger.info(f"  β initialized: shape ({L}, {T}), α = 1/{T} per layer")
+        else:
+            self._beta = torch.zeros(T, requires_grad=True)
+        self._alpha_optimizer = torch.optim.Adam([self._beta], lr=self.lr_alpha)
+
+    def _build_layer_ranges(self, model: torch.nn.Module) -> List[Tuple[int, int]]:
+        """
+        Partition the flat parameter vector into contiguous layer groups.
+
+        Returns a list of (start, end) index pairs in model.named_parameters() order.
+        Groups parameters by named-module prefix:
+          - roberta.embeddings.*      → "roberta.embeddings"
+          - roberta.encoder.layer.N.* → "roberta.encoder.layer.N"
+          - roberta.pooler.*          → "roberta.pooler"
+          - classifier.*              → "classifier"
+
+        Asserts that the ranges cover exactly all parameters (no gaps, no overlaps).
+        """
+
+        def layer_key(name: str) -> str:
+            # Encoder layers: match "roberta.encoder.layer.N" exactly
+            m = re.match(r"(roberta\.encoder\.layer\.\d+)", name)
+            if m:
+                return m.group(1)
+            # Other roberta sub-modules: "roberta.embeddings", "roberta.pooler", etc.
+            m = re.match(r"(roberta\.[^.]+)", name)
+            if m:
+                return m.group(1)
+            # Everything else (classifier, ...): use top-level module name
+            return name.split(".")[0]
+
+        ranges: List[Tuple[int, int]] = []
+        cur_key: Optional[str] = None
+        cur_start = 0
+        pos = 0
+        for name, param in model.named_parameters():
+            key = layer_key(name)
+            if key != cur_key:
+                if cur_key is not None:
+                    ranges.append((cur_start, pos))
+                cur_key, cur_start = key, pos
+            pos += param.numel()
+        if cur_key is not None:
+            ranges.append((cur_start, pos))
+
+        total_params = sum(p.numel() for p in model.parameters())
+        assert ranges and ranges[-1][1] == total_params, (
+            f"Layer ranges don't cover all parameters: last end={ranges[-1][1]}, "
+            f"total={total_params}"
+        )
+        return ranges
 
     # ------------------------------------------------------------------
     # Task vector loading
@@ -274,6 +367,12 @@ class SelfPositionSearch(BaseTrainingMethod):
         if self.ties_preprocessing:
             self._apply_ties_preprocessing(task_names)
 
+        if self.layerwise:
+            self._layer_ranges = self._build_layer_ranges(model)
+            L = len(self._layer_ranges)
+            logger.info(f"  Layer-wise mode: L={L} layer groups")
+            self._init_beta(T=len(task_names))
+
     def _apply_ties_preprocessing(self, task_names: List[str]) -> None:
         """
         Apply TIES steps 1–3 to task vectors (all α-independent).
@@ -329,13 +428,28 @@ class SelfPositionSearch(BaseTrainingMethod):
         """
         In-place: set model params to base_θ + Σ_k α_k · τ_k.
 
+        Global mode:    alpha_values shape (T,) — same α for all parameters.
+        Layer-wise mode: alpha_values shape (L, T) — per-layer α.
+
         All computation is on CPU (task vectors are CPU float32); result is
         cast to each parameter's original dtype and copied to its device.
         """
-        merged_tv = sum(
-            float(alpha_values[i]) * self._task_vectors_cpu[name] for i, name in enumerate(self._task_names_ordered)
-        )
-        merged_params = self._base_params_cpu + merged_tv
+        if self.layerwise:
+            # Per-layer merge: for each layer group l, apply α_l ∈ Δ_T
+            merged_parts = []
+            for l, (start, end) in enumerate(self._layer_ranges):
+                alpha_l = alpha_values[l]  # (T,) for layer l
+                merged_l = self._base_params_cpu[start:end].clone()
+                for k, name in enumerate(self._task_names_ordered):
+                    merged_l = merged_l + float(alpha_l[k]) * self._task_vectors_cpu[name][start:end]
+                merged_parts.append(merged_l)
+            merged_params = torch.cat(merged_parts)
+        else:
+            merged_tv = sum(
+                float(alpha_values[i]) * self._task_vectors_cpu[name]
+                for i, name in enumerate(self._task_names_ordered)
+            )
+            merged_params = self._base_params_cpu + merged_tv
 
         with torch.no_grad():
             idx = 0
@@ -411,10 +525,15 @@ class SelfPositionSearch(BaseTrainingMethod):
         except TypeError:
             steps_per_epoch = (self.max_samples_per_task or 10_000) // self.batch_size
 
+        with torch.no_grad():
+            alpha_display = F.softmax(self._beta.detach(), dim=-1)
+            if self.layerwise:
+                alpha_display = alpha_display.mean(dim=0)  # (T,) — mean across layers for readability
+        alpha_label = "α(mean over layers)" if self.layerwise else "α"
         logger.info(
             f"\nEpoch {epoch + 1}/{self.num_epochs}  —  "
             f"Self Position steps: {steps_per_epoch}  —  "
-            f"α = {F.softmax(self._beta.detach(), dim=0).numpy().round(4).tolist()}"
+            f"{alpha_label} = {alpha_display.numpy().round(4).tolist()}"
         )
 
         log_interval = max(10, steps_per_epoch // 4)  # ~4 log points per epoch regardless of length
@@ -447,8 +566,10 @@ class SelfPositionSearch(BaseTrainingMethod):
             # ----------------------------------------------------------------
             # 2. Compute α = softmax(β) and reconstruct merged model
             # ----------------------------------------------------------------
-            alpha = F.softmax(self._beta, dim=0)  # non-leaf; autograd graph to β
-            alpha_np = alpha.detach().numpy()
+            # dim=-1: softmax over tasks. For global β (T,): same as dim=0.
+            # For layer-wise β (L, T): applies per-layer softmax → (L, T).
+            alpha = F.softmax(self._beta, dim=-1)
+            alpha_np = alpha.detach().numpy()  # (T,) global or (L, T) layer-wise
 
             self._set_model_to_merged(model, alpha_np)
             optimizer.zero_grad(set_to_none=True)
@@ -514,9 +635,20 @@ class SelfPositionSearch(BaseTrainingMethod):
             g = torch.cat([p.grad.detach().cpu().float().flatten() for p in model.parameters() if p.grad is not None])
 
             # ----------------------------------------------------------------
-            # 6. Compute ∇_α_j = ⟨g, τ_j⟩ for j = 1..T (T CPU dot products)
+            # 6. Compute gradient w.r.t. α
+            #    Global:     ∇_α_j = ⟨g, τ_j⟩  for j = 1..T
+            #    Layer-wise: ∇_α_{l,k} = ⟨g_l, τ_{l,k}⟩  for l = 1..L, k = 1..T
             # ----------------------------------------------------------------
-            grad_alpha = torch.tensor([g.dot(self._task_vectors_cpu[name]).item() for name in self._task_names_ordered])
+            if self.layerwise:
+                grad_alpha = torch.zeros(len(self._layer_ranges), T)
+                for l, (start, end) in enumerate(self._layer_ranges):
+                    g_l = g[start:end]
+                    for k, name in enumerate(self._task_names_ordered):
+                        grad_alpha[l, k] = g_l.dot(self._task_vectors_cpu[name][start:end]).item()
+            else:
+                grad_alpha = torch.tensor(
+                    [g.dot(self._task_vectors_cpu[name]).item() for name in self._task_names_ordered]
+                )
 
             # ----------------------------------------------------------------
             # 7. Propagate ∇_α through softmax → ∇_β; Adam step on β
@@ -535,12 +667,16 @@ class SelfPositionSearch(BaseTrainingMethod):
 
             # Periodic logging (~4 log points per epoch regardless of epoch length)
             if (step + 1) % log_interval == 0 or step == steps_per_epoch - 1:
-                alpha_log = F.softmax(self._beta.detach(), dim=0).numpy().round(4).tolist()
+                with torch.no_grad():
+                    alpha_per_task = F.softmax(self._beta.detach(), dim=-1)
+                    if self.layerwise:
+                        alpha_per_task = alpha_per_task.mean(dim=0)  # (T,) mean over layers
+                alpha_log = alpha_per_task.numpy().round(4).tolist()
                 logger.info(
                     f"  Step {step + 1}/{steps_per_epoch} — "
                     f"Loss: {step_loss:.4f} — "
                     f"Task losses: {[f'{l:.4f}' for l in task_losses_scalar]} — "
-                    f"α: {alpha_log}"
+                    f"α{'(mean)' if self.layerwise else ''}: {alpha_log}"
                 )
 
                 try:
@@ -550,7 +686,8 @@ class SelfPositionSearch(BaseTrainingMethod):
                         prefix = wandb_prefix or "train"
                         local_step = epoch * steps_per_epoch + step + 1
                         log_dict = {f"{prefix}/step_loss": step_loss, "local_step": local_step}
-                        for tname, tl, ta in zip(task_names, task_losses_scalar, alpha_np):
+                        alpha_log_arr = alpha_per_task.numpy()
+                        for tname, tl, ta in zip(task_names, task_losses_scalar, alpha_log_arr):
                             log_dict[f"{prefix}/task_loss/{tname}"] = tl
                             log_dict[f"{prefix}/alpha/{tname}"] = float(ta)
                         wandb.log(log_dict)
@@ -558,7 +695,7 @@ class SelfPositionSearch(BaseTrainingMethod):
                     pass
 
         # Set model to final merged position (for checkpoint saving by base class)
-        alpha_final = F.softmax(self._beta.detach(), dim=0).numpy()
+        alpha_final = F.softmax(self._beta.detach(), dim=-1).numpy()  # (T,) or (L, T)
         self._set_model_to_merged(model, alpha_final)
 
         avg_loss = total_loss / num_steps if num_steps > 0 else 0.0
