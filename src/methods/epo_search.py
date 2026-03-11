@@ -513,7 +513,9 @@ class EPOFineTuning(BaseTrainingMethod):
                     grads_for_gram = grads_np
 
                 G = (grads_for_gram @ grads_for_gram.T).astype(np.float64)  # (T, T)
-                del grads_for_gram
+                # Note: grads_for_gram is NOT deleted here — it is reused below for the
+                # combined gradient so that the LP and the gradient application operate on
+                # the same (normalised or unnormalised) gradient representation.
 
                 # ── losses → EPO LP ──────────────────────────────────────────
                 if utopia_np is not None and nadir_np is not None:
@@ -524,15 +526,20 @@ class EPOFineTuning(BaseTrainingMethod):
 
                 alpha = epo_lp.get_alpha(epo_losses, r, G)  # (T,)
 
-                combined_grad_cpu = torch.from_numpy((alpha.astype(np.float32) @ grads_np).copy())
-                del grads_np
+                # Use grads_for_gram (same representation as LP) to ensure the applied
+                # gradient direction is consistent with what the LP / MGDA solved for.
+                # Previously this used grads_np (unnormalised), which caused the combined
+                # gradient to be dominated by whichever task had the largest gradient
+                # magnitude — overriding the LP's preference weighting.
+                combined_grad_cpu = torch.from_numpy((alpha.astype(np.float32) @ grads_for_gram).copy())
+                del grads_for_gram, grads_np
 
                 idx = 0
                 for p in model.parameters():
-                    numel = p.numel()
                     if p.requires_grad:
+                        numel = p.numel()
                         p.grad = combined_grad_cpu[idx : idx + numel].reshape(p.shape).to(p.device)
-                    idx += numel
+                        idx += numel
 
             else:
                 # ── GPU / cuBLAS path (fast; needs ~2 GB extra VRAM) ─────────
@@ -557,16 +564,21 @@ class EPOFineTuning(BaseTrainingMethod):
 
                 alpha = epo_lp.get_alpha(epo_losses, r, G)  # (T,)
 
-                alpha_gpu = torch.tensor(alpha, dtype=torch.float32, device=grads_gpu.device)
-                combined_grad_gpu = alpha_gpu @ grads_gpu  # (n_params,) on GPU
-                del grads_gpu
+                # Use grads_for_gram (same representation as LP) to ensure the applied
+                # gradient direction is consistent with what the LP / MGDA solved for.
+                # Previously this used grads_gpu (unnormalised), which caused the combined
+                # gradient to be dominated by whichever task had the largest gradient
+                # magnitude — overriding the LP's preference weighting.
+                alpha_gpu = torch.tensor(alpha, dtype=torch.float32, device=grads_for_gram.device)
+                combined_grad_gpu = alpha_gpu @ grads_for_gram  # (n_params,) on GPU
+                del grads_gpu, grads_for_gram
 
                 idx = 0
                 for p in model.parameters():
-                    numel = p.numel()
                     if p.requires_grad:
+                        numel = p.numel()
                         p.grad = combined_grad_gpu[idx : idx + numel].reshape(p.shape)
-                    idx += numel
+                        idx += numel
 
             # ----------------------------------------------------------------
             # 7. Gradient clipping, optimiser step, scheduler step

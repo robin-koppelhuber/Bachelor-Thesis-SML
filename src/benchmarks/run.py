@@ -130,8 +130,10 @@ def load_cached_trained_model_as_task_vector(
     """
     Load a cached trained model and return it as a flattened task vector.
 
-    The base model has a zeroed classification head, so delta = trained - 0 = trained weights.
-    We skip loading the base model entirely and just flatten the trained weights directly.
+    The task vector is the parameter delta (trained - base).  For the classifier head the
+    base has zeroed weights (zero_classifier=True in create_base_model_fn), so the delta
+    equals the trained head directly.  For the backbone the base has the pretrained weights,
+    so the delta is the fine-tuning shift.
 
     Args:
         cache_path: Path to cached model checkpoint
@@ -141,11 +143,24 @@ def load_cached_trained_model_as_task_vector(
         device: Device to load model on
 
     Returns:
-        Flattened trained model weights (equivalent to task vector delta from zero base)
+        Flattened task vector (trained - base), consistent with what BaseTrainingMethod.train()
+        returns for first-time runs.
     """
+    # Load trained weights into a fresh model instance
     trained_model = create_base_model_fn(max_num_labels)
     method._load_trained_model(trained_model, str(cache_path), device=device)
-    return flatten_task_vector(dict(trained_model.state_dict()))
+    trained_state = trained_model.state_dict()
+
+    # Load reference base (pretrained backbone + zeroed classifier) to compute the delta.
+    # This is necessary because the backbone delta = trained_backbone - pretrained_backbone,
+    # NOT just the trained_backbone values.  Previously the function returned full weights
+    # for all parameters, which caused backbone params to be doubled when applied during eval.
+    base_model = create_base_model_fn(max_num_labels)
+    base_state = base_model.state_dict()
+
+    task_vector = {name: trained_state[name] - base_state[name]
+                   for name in trained_state if name in base_state}
+    return flatten_task_vector(task_vector)
 
 
 def get_predictions_and_labels(

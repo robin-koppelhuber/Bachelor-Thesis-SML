@@ -1,8 +1,8 @@
 # @package _global_
 method:
   name: epo
-  class_path: src.methods.epo_search.EPOSearch
-  description: "Exact Pareto Optimization (EPO) search"
+  class_path: src.methods.epo_search.EPOFineTuning
+  description: "Exact Pareto Optimization (EPO) fine-tuning"
 
   # EPO-specific parameters
   params:
@@ -13,17 +13,16 @@ method:
     warmup_steps: 100
     weight_decay: 0.01
 
-    # EPO settings
-    solver: quadprog  # quadprog, cvxpy, scipy
-    n_tasks: 4  # Number of tasks (overridden by benchmark config)
+    # EPO algorithm settings
+    # normalize_gradients=true: LP / MGDA uses unit-norm per-task gradients for scale-invariant
+    #   preference alignment.  The combined gradient is also built from the normalised vectors,
+    #   so the LP solution and the applied update are fully consistent.
+    normalize_gradients: true
+    pref_eps: 0.001      # LP t > pref_eps required to use LP result; else fall back to MGDA
+    invert_preference: false  # Set true to use paper's original L∝r convention (ablation only)
 
-    # Preference handling
-    use_preferences: true
+    # Preference handling (BaseTrainingMethod)
     normalize_preferences: true
-
-    # MGDA settings
-    normalization_type: loss  # loss, loss+, none
-    update_weights_every: 1  # Update task weights every N steps
 
     # Optimization
     gradient_accumulation_steps: 1
