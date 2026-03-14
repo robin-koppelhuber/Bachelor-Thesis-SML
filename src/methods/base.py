@@ -78,6 +78,7 @@ class BaseTrainingMethod(ABC):
         max_grad_norm: float = 1.0,
         normalize_preferences: bool = True,
         use_fp16: bool = False,
+        use_gradient_checkpointing: bool = True,
         use_torch_compile: bool = True,
         torch_compile_mode: str = "default",
         dataloader_num_workers: int = 0,
@@ -133,6 +134,7 @@ class BaseTrainingMethod(ABC):
         self.max_grad_norm = max_grad_norm
         self.normalize_preferences = normalize_preferences
         self.use_fp16 = use_fp16
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_torch_compile = use_torch_compile
         self.torch_compile_mode = torch_compile_mode
         self.dataloader_num_workers = dataloader_num_workers
@@ -811,10 +813,16 @@ class BaseTrainingMethod(ABC):
         # 3. Initialize model
         model = self._initialize_model(base_model, dataset_configs, device, cache_dir=model_cache_dir)
 
-        # Enable gradient checkpointing for memory efficiency (if available)
-        if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable()
-            logger.info("Gradient checkpointing enabled for memory efficiency")
+        # Enable gradient checkpointing for memory efficiency (if available).
+        # use_reentrant=False: preserves autocast context during recomputation (important
+        # for EPO which uses autocast without GradScaler) and is the modern recommended
+        # approach. use_reentrant=True (old default) loses autocast context during the
+        # recomputed forward pass, producing slightly inaccurate gradients with fp16.
+        if self.use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            logger.info("Gradient checkpointing enabled (use_reentrant=False)")
+        else:
+            logger.info("Gradient checkpointing disabled")
 
         # Enable cuDNN benchmark for faster training (CUDA only, fixed input sizes)
         if device.type == "cuda":
@@ -963,7 +971,9 @@ class BaseTrainingMethod(ABC):
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     no_improve_count = 0
-                    best_state_dict = copy.deepcopy(model.state_dict())
+                    # Use explicit CPU clone instead of copy.deepcopy to guarantee
+                    # independence from CUDA tensors across subsequent training updates.
+                    best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                     logger.info(f"  New best model at epoch {epoch + 1} (val_loss={best_val_loss:.4f})")
                 else:
                     no_improve_count += 1
@@ -1051,10 +1061,24 @@ class BaseTrainingMethod(ABC):
             if name in base_state_dict:
                 task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
 
+        # Diagnostic: log norms of key task vector components to verify correctness
+        classifier_keys = [k for k in task_vector_dict if not k.startswith(model.base_model_prefix + ".")]
+        backbone_keys = [k for k in task_vector_dict if k.startswith(model.base_model_prefix + ".")]
+        if classifier_keys:
+            clf_norm = sum(task_vector_dict[k].norm().item() ** 2 for k in classifier_keys) ** 0.5
+            clf_trained_norm = sum(trained_state_dict[k].cpu().norm().item() ** 2 for k in classifier_keys) ** 0.5
+            logger.info(f"  Task vector diagnostic — classifier L2 norm: {clf_norm:.6f}  (trained weights norm: {clf_trained_norm:.6f})")
+        if backbone_keys:
+            bb_norm = sum(task_vector_dict[k].norm().item() ** 2 for k in backbone_keys[:5]) ** 0.5
+            logger.info(f"  Task vector diagnostic — backbone L2 norm (first 5 params): {bb_norm:.6f}")
+        logger.info(f"  Task vector diagnostic — total params: {len(task_vector_dict)}, total elements: {sum(v.numel() for v in task_vector_dict.values())}")
+        logger.info(f"  Task vector diagnostic — key order (first 3, last 3): {list(task_vector_dict.keys())[:3]} ... {list(task_vector_dict.keys())[-3:]}")
+
         # 13. Flatten and return
         from src.benchmarks.run import flatten_task_vector
 
         flattened = flatten_task_vector(task_vector_dict)
+        logger.info(f"  Task vector diagnostic — flat vector size: {flattened.numel()}, norm: {flattened.norm().item():.6f}")
 
         logger.info(f"{self.__class__.__name__} completed!")
         logger.info("=" * 80)

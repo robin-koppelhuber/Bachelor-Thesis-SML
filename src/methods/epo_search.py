@@ -445,6 +445,12 @@ class EPOFineTuning(BaseTrainingMethod):
             task_losses_scalar: List[float] = []
             task_grads: List[torch.Tensor] = []  # flat float32; device = CPU or GPU per flag
 
+            # On the very first step: log the expected gradient vector size for diagnostics.
+            if step == 0 and epoch == 0:
+                n_req_grad = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                logger.info(f"  [EPO diag] requires_grad params: {n_req_grad:,} elements across "
+                            f"{sum(1 for p in model.parameters() if p.requires_grad)} tensors")
+
             for task_name in task_names:
                 batch = task_batches[task_name]
                 task_cfg = dataset_configs[task_name]
@@ -479,19 +485,34 @@ class EPOFineTuning(BaseTrainingMethod):
                 task_losses_scalar.append(loss.item())
 
                 # Collect gradient as a flat float32 vector.
+                # IMPORTANT: iterate over `requires_grad` parameters (not `p.grad is not None`)
+                # to guarantee the same parameter set and ordering as the application loop below.
+                # Parameters with no gradient (p.grad is None) are filled with zeros so that the
+                # flat vector length is always consistent with the application loop.
                 # cpu_gradient_offload=True: move to CPU immediately to cap GPU memory
                 #   (keeps peak GPU overhead to one backward pass at a time).
                 # cpu_gradient_offload=False: keep on GPU; Gram + combined grad computed
                 #   on GPU with cuBLAS — eliminates ~2 GB PCIe transfer per step.
                 if self.cpu_gradient_offload:
-                    grad_flat = torch.cat(
-                        [p.grad.detach().cpu().float().flatten() for p in model.parameters() if p.grad is not None]
-                    )
+                    grad_flat = torch.cat([
+                        p.grad.detach().cpu().float().flatten() if p.grad is not None
+                        else torch.zeros(p.numel(), dtype=torch.float32)
+                        for p in model.parameters() if p.requires_grad
+                    ])
                 else:
-                    grad_flat = torch.cat(
-                        [p.grad.detach().float().flatten() for p in model.parameters() if p.grad is not None]
-                    )
+                    grad_flat = torch.cat([
+                        p.grad.detach().float().flatten() if p.grad is not None
+                        else torch.zeros(p.numel(), dtype=torch.float32, device=p.device)
+                        for p in model.parameters() if p.requires_grad
+                    ])
                 task_grads.append(grad_flat)
+                # First-step diagnostic: log actual collected gradient size
+                if step == 0 and epoch == 0 and task_name == task_names[0]:
+                    n_with_grad = sum(1 for p in model.parameters() if p.requires_grad and p.grad is not None)
+                    n_without_grad = sum(1 for p in model.parameters() if p.requires_grad and p.grad is None)
+                    logger.info(f"  [EPO diag] After backward (task={task_name}): "
+                                f"grad_flat size={grad_flat.numel():,}, "
+                                f"params_with_grad={n_with_grad}, params_without_grad={n_without_grad}")
                 optimizer.zero_grad(set_to_none=True)
 
             # ----------------------------------------------------------------

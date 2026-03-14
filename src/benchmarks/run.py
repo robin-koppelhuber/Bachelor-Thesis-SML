@@ -762,6 +762,16 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
         merged_task_vector = unflatten_task_vector(merged_flat, task_vector_template)
 
+        # Diagnostic: verify task vector reconstruction
+        if is_training_based:
+            base_prefix = "roberta."  # TODO: make this model-agnostic if needed
+            clf_keys = [k for k in merged_task_vector if not k.startswith(base_prefix)]
+            if clf_keys:
+                clf_norm = sum(merged_task_vector[k].norm().item() ** 2 for k in clf_keys) ** 0.5
+                logger.info(f"  [Diag] Unflattened task vector — classifier L2 norm: {clf_norm:.6f}")
+            logger.info(f"  [Diag] Unflattened task vector — total params: {len(merged_task_vector)}, flat size: {merged_flat.numel()}, template size: {sum(t.numel() for t in task_vector_template.values())}")
+            logger.info(f"  [Diag] Template key order (first 3, last 3): {list(task_vector_template.keys())[:3]} ... {list(task_vector_template.keys())[-3:]}")
+
         # Pre-compute cache key components once per preference vector (not per task).
         if cache_enabled:
             import hashlib

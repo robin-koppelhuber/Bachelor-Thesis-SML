@@ -44,6 +44,7 @@ method:
     # torch.compile works well for EPO: forward+backward are standard transformer ops.
     # Disabled for Self Position (in-place p.data reconstruction breaks compiled graphs).
     use_torch_compile: true
+    use_gradient_checkpointing: false
 
     # Checkpoint management
     save_epoch_checkpoints: false

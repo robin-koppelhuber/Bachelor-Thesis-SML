@@ -19,6 +19,7 @@ method:
     max_grad_norm: 1.0
     use_fp16: false
     use_torch_compile: false
+    use_gradient_checkpointing: false
     dataloader_num_workers: 0
     save_epoch_checkpoints: true
     auto_resume: true

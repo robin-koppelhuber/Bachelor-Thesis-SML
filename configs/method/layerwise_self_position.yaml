@@ -39,6 +39,7 @@ method:
 
     # Disable torch.compile (Self Position reconstructs params in-place each step)
     use_torch_compile: false
+    use_gradient_checkpointing: false
 
     # Memory optimization
     max_samples_per_task: 6000
