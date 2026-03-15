@@ -847,7 +847,16 @@ class BaseTrainingMethod(ABC):
         else:
             logger.info("torch.compile() disabled via config")
 
-        base_state_dict = copy.deepcopy(model.state_dict())
+        # Capture base state dict and strip _orig_mod. prefix added by torch.compile.
+        # Without stripping, the base_prefix check below misclassifies ALL params as
+        # "classifier" (since "_orig_mod.roberta.*" doesn't start with "roberta."),
+        # zeroing the entire base_state_dict and producing task_vector = full trained
+        # weights instead of the delta — which corrupts the evaluation reconstruction.
+        _raw_base = model.state_dict()
+        base_state_dict = {
+            (k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v.clone().cpu()
+            for k, v in _raw_base.items()
+        }
 
         # Zero classifier entries in the saved base so that delta = full trained head.
         # Training still starts from the random head (good for gradient signal), but the
@@ -1019,7 +1028,13 @@ class BaseTrainingMethod(ABC):
         # 12. Compute task vector from trained model (captured here so _save_trained_model
         #     can reuse the same state dict without a second GPU→CPU copy).
         logger.info("\nComputing task vector from trained model...")
-        trained_state_dict = model.state_dict()
+        # Strip _orig_mod. prefix so keys align with base_state_dict and the saved checkpoint
+        # is portable (loadable into an uncompiled model via _load_trained_model).
+        _raw_trained = model.state_dict()
+        trained_state_dict = {
+            (k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v
+            for k, v in _raw_trained.items()
+        }
 
         # 10. Save final trained model if requested
         if save_path:
