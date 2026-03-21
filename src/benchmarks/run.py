@@ -633,6 +633,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                 "use_fp16",  # Mixed precision (numerical precision)
                 "max_samples_per_task",  # Data subsetting (limits training data)
                 "reference_num_samples",  # Reference split size for utopia/nadir computation
+                "separate_heads",  # Architecture: T separate heads vs shared head
                 # TIES merging parameters
                 "k",  # Top-k fraction to keep
                 "lambda_merge",  # Merge scaling coefficient
@@ -705,11 +706,48 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             if should_load_cache:
                 logger.info(f"Loading cached trained model: {model_cache_path}")
-                max_labels = max(ds.num_labels for ds in dataset_configs.values())
-                merged_flat = load_cached_trained_model_as_task_vector(
-                    model_cache_path, create_base_model, max_labels, method, device
-                )
-                logger.info("  ✓ Loaded from cache")
+                if getattr(method, "separate_heads", False):
+                    # Separate heads: checkpoint has roberta.* + heads.* keys (MultiTaskModel).
+                    # Re-extract per-task flat vectors exactly as train() does.
+                    from src.models.multi_task import extract_per_task_state_dicts
+
+                    try:
+                        from safetensors.torch import load_file as _st_load
+                        trained_state = _st_load(str(model_cache_path), device="cpu")
+                    except Exception:
+                        trained_state = torch.load(model_cache_path, map_location="cpu")
+
+                    pretrained_base = create_base_model(num_labels=2)
+                    pretrained_enc = {
+                        k: v for k, v in pretrained_base.state_dict().items()
+                        if k.startswith("roberta.")
+                    }
+                    del pretrained_base
+
+                    _task_names_list = list(cfg.benchmark.tasks)
+                    per_task_states = extract_per_task_state_dicts(
+                        trained_state, _task_names_list, pretrained_enc
+                    )
+
+                    _nl_templates: Dict[int, list] = {}
+                    merged_flat = {}
+                    for _tname in _task_names_list:
+                        _nl = dataset_configs[_tname].num_labels
+                        if _nl not in _nl_templates:
+                            _tmpl = create_base_model(num_labels=_nl)
+                            _nl_templates[_nl] = list(_tmpl.state_dict().keys())
+                            del _tmpl
+                        _ts = per_task_states[_tname]
+                        _tensors = [_ts[k] for k in _nl_templates[_nl] if k in _ts]
+                        merged_flat[_tname] = torch.cat([t.flatten() for t in _tensors])
+                        logger.info(f"  [{_tname}] flat size={merged_flat[_tname].numel()}")
+                    logger.info("  ✓ Loaded from cache (separate_heads=True)")
+                else:
+                    max_labels = max(ds.num_labels for ds in dataset_configs.values())
+                    merged_flat = load_cached_trained_model_as_task_vector(
+                        model_cache_path, create_base_model, max_labels, method, device
+                    )
+                    logger.info("  ✓ Loaded from cache")
             elif should_train:
                 logger.info(f"Training multi-task model (mode={mode})...")
 
@@ -743,50 +781,74 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             logger.info("Merging task vectors...")
             merged_flat = method.merge(task_vectors=task_vectors_dict, preference_vector=preference_array)
 
-        # Unflatten merged vector (create template if not already available)
-        if task_vector_template is None:
-            # Create template on-demand for training-based methods
-            first_task = cfg.benchmark.tasks[0]
-            base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
-            finetuned_model_template = load_model(
-                model_id=dataset_configs[first_task].finetuned_checkpoint,
-                num_labels=None,  # Don't pass num_labels for fine-tuned models
-                cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
-                device=device,
-                torch_dtype=cfg.model.loading.torch_dtype,
-            )
-            task_vector_template = compute_task_vector(finetuned_model_template, base_model_template)
-            del base_model_template, finetuned_model_template
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            logger.info("  Created task vector template for evaluation")
+        # Determine whether merged_flat is per-task (separate_heads=True) or a single vector.
+        _is_per_task = isinstance(merged_flat, dict)
 
-        merged_task_vector = unflatten_task_vector(merged_flat, task_vector_template)
+        # Unflatten merged vector.
+        # For per-task flat vectors (separate_heads=True), unflattening happens per task in the
+        # evaluation loop using each task's own template.  For the legacy single-vector case,
+        # we build/reuse a shared template here.
+        if not _is_per_task:
+            if task_vector_template is None:
+                # Create template on-demand for training-based methods
+                first_task = cfg.benchmark.tasks[0]
+                base_model_template = create_base_model(num_labels=dataset_configs[first_task].num_labels)
+                finetuned_model_template = load_model(
+                    model_id=dataset_configs[first_task].finetuned_checkpoint,
+                    num_labels=None,  # Don't pass num_labels for fine-tuned models
+                    cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
+                    device=device,
+                    torch_dtype=cfg.model.loading.torch_dtype,
+                )
+                task_vector_template = compute_task_vector(finetuned_model_template, base_model_template)
+                del base_model_template, finetuned_model_template
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                logger.info("  Created task vector template for evaluation")
 
-        # Diagnostic: verify task vector reconstruction
-        if is_training_based:
-            base_prefix = "roberta."  # TODO: make this model-agnostic if needed
-            clf_keys = [k for k in merged_task_vector if not k.startswith(base_prefix)]
-            if clf_keys:
-                clf_norm = sum(merged_task_vector[k].norm().item() ** 2 for k in clf_keys) ** 0.5
-                logger.info(f"  [Diag] Unflattened task vector — classifier L2 norm: {clf_norm:.6f}")
-            logger.info(f"  [Diag] Unflattened task vector — total params: {len(merged_task_vector)}, flat size: {merged_flat.numel()}, template size: {sum(t.numel() for t in task_vector_template.values())}")
-            logger.info(f"  [Diag] Template key order (first 3, last 3): {list(task_vector_template.keys())[:3]} ... {list(task_vector_template.keys())[-3:]}")
+            merged_task_vector = unflatten_task_vector(merged_flat, task_vector_template)
+
+            # Diagnostic: verify task vector reconstruction
+            if is_training_based:
+                base_prefix = "roberta."  # TODO: make this model-agnostic if needed
+                clf_keys = [k for k in merged_task_vector if not k.startswith(base_prefix)]
+                if clf_keys:
+                    clf_norm = sum(merged_task_vector[k].norm().item() ** 2 for k in clf_keys) ** 0.5
+                    logger.info(f"  [Diag] Unflattened task vector — classifier L2 norm: {clf_norm:.6f}")
+                logger.info(f"  [Diag] Unflattened task vector — total params: {len(merged_task_vector)}, flat size: {merged_flat.numel()}, template size: {sum(t.numel() for t in task_vector_template.values())}")
+                logger.info(f"  [Diag] Template key order (first 3, last 3): {list(task_vector_template.keys())[:3]} ... {list(task_vector_template.keys())[-3:]}")
 
         # Pre-compute cache key components once per preference vector (not per task).
+        # For per-task flat vectors, hash all tasks' flat vectors together (task_name in the
+        # cache key still differentiates per-task entries).
         if cache_enabled:
             import hashlib
 
             model_id = config_hash if is_training_based else None
-            task_vec_bytes = str(sorted(merged_task_vector.items())).encode()
-            task_vec_hash = hashlib.md5(task_vec_bytes).hexdigest()[:12]
+            if _is_per_task:
+                _hash_bytes = str({t: v.tolist() for t, v in sorted(merged_flat.items())}).encode()
+            else:
+                _hash_bytes = str(sorted(merged_task_vector.items())).encode()
+            task_vec_hash = hashlib.md5(_hash_bytes).hexdigest()[:12]
 
         # For each task, evaluate the merged model (with Joblib caching)
         task_results = {}
+        # Cache per-task base-model templates to avoid reloading for the same num_labels.
+        _eval_templates: Dict[int, Dict] = {}
 
         for task_name in cfg.benchmark.tasks:
             logger.info(f"\nEvaluating on task: {task_name}")
 
             dataset_cfg = dataset_configs[task_name]
+
+            # Resolve the task-specific merged task vector dict.
+            if _is_per_task:
+                # separate_heads=True: unflatten this task's flat vector against a per-task template.
+                _nl = dataset_cfg.num_labels
+                if _nl not in _eval_templates:
+                    _eval_templates[_nl] = create_base_model(num_labels=_nl).state_dict()
+                current_merged_tv = unflatten_task_vector(merged_flat[task_name], _eval_templates[_nl])
+            else:
+                current_merged_tv = merged_task_vector
 
             if cache_enabled:
 
@@ -801,7 +863,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
                     model_id_param=model_id,
                     num_samples_param=cfg.benchmark.evaluation.num_samples,
                     split_seed_param=cfg.get("seed", 42),
-                    merged_task_vector=merged_task_vector,
+                    merged_task_vector=current_merged_tv,
                     dataset_cfg=dataset_cfg,
                     tokenizer=tokenizer,
                     create_base_model_fn=create_base_model,
@@ -822,7 +884,7 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
             else:
                 # No caching - perform evaluation directly
                 result = perform_evaluation(
-                    merged_task_vector=merged_task_vector,
+                    merged_task_vector=current_merged_tv,
                     task_name=task_name,
                     dataset_cfg=dataset_cfg,
                     tokenizer=tokenizer,

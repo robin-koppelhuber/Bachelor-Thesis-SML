@@ -54,3 +54,7 @@ method:
     # Early stopping
     early_stopping: true
     patience: 2        # Epochs without improvement before stopping
+
+    # Architecture: must be false — self-position reconstructs params from HF task vectors
+    # (roberta.* + classifier.* keys) so the model must be a standard ForSequenceClassification.
+    separate_heads: false

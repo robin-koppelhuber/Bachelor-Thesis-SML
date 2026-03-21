@@ -25,3 +25,4 @@ method:
     auto_resume: true
     keep_all_epoch_checkpoints: false
     max_samples_per_task: null
+    separate_heads: true  # Use T task-specific classification heads

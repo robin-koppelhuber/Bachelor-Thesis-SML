@@ -54,3 +54,6 @@ method:
     # Early stopping
     early_stopping: true
     patience: 2        # Epochs without improvement before stopping
+
+    # Architecture
+    separate_heads: true  # Use T task-specific classification heads (recommended)

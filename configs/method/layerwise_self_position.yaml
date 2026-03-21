@@ -54,3 +54,6 @@ method:
     # Early stopping
     early_stopping: true
     patience: 2
+
+    # Architecture: must be false (same reason as self_position.yaml)
+    separate_heads: false

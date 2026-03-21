@@ -459,6 +459,9 @@ class EPOFineTuning(BaseTrainingMethod):
 
                 labels = batch.pop("labels")
 
+                if hasattr(model, "set_task"):
+                    model.set_task(task_name)
+
                 # Use autocast for fp16 forward-pass memory savings if enabled.
                 # GradScaler is not used (see backward comment below).
                 if self.use_fp16 and torch.cuda.is_available():
@@ -470,7 +473,7 @@ class EPOFineTuning(BaseTrainingMethod):
 
                 with ctx:
                     outputs = model(**batch)
-                    logits = outputs.logits[:, : task_cfg.num_labels]
+                    logits = outputs.logits[:, : task_cfg.num_labels]  # no-op with separate heads
                     loss = torch.nn.CrossEntropyLoss()(logits, labels)
 
                 batch["labels"] = labels  # restore

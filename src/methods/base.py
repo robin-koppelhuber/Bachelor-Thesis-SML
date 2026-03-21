@@ -3,7 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -90,6 +90,7 @@ class BaseTrainingMethod(ABC):
         early_stopping: bool = False,
         patience: int = 2,
         split_seed: int = 42,
+        separate_heads: bool = True,
         **kwargs,
     ):
         """
@@ -122,6 +123,9 @@ class BaseTrainingMethod(ABC):
             split_seed: Random seed for the stratified validation split. Must match the
                 seed used in reference_losses.py (default 42) to ensure the validation
                 set is the same subset used for utopia/nadir computation.
+            separate_heads: When True (default), use T separate task-specific classification
+                heads (MultiTaskModel).  When False, use the legacy single shared head
+                (old behaviour — for reproducing earlier results only).
             **kwargs: Additional method-specific parameters
         """
         self.params = kwargs
@@ -146,6 +150,7 @@ class BaseTrainingMethod(ABC):
         self.early_stopping = early_stopping
         self.patience = patience
         self.split_seed = split_seed
+        self.separate_heads = separate_heads
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(lr={self.learning_rate}, epochs={self.num_epochs})"
@@ -375,6 +380,8 @@ class BaseTrainingMethod(ABC):
             task_loss = 0.0
             steps = 0
             task_cfg = dataset_configs[task_name]
+            if hasattr(model, "set_task"):
+                model.set_task(task_name)
             for batch in val_dataloaders[task_name]:
                 labels = batch.pop("labels").to(device)
                 outputs = model(**{kk: vv.to(device) for kk, vv in batch.items()})
@@ -410,10 +417,15 @@ class BaseTrainingMethod(ABC):
         cache_dir: Optional[str] = None,
     ) -> torch.nn.Module:
         """
-        Initialize model for multi-task training
+        Initialize model for multi-task training.
 
-        Uses maximum num_labels across all tasks for the classification head.
-        For more sophisticated multi-task architectures, subclasses can override.
+        When ``self.separate_heads=True`` (default): creates a
+        :class:`~src.models.multi_task.MultiTaskModel` with T separate heads, one per task.
+        Each head is randomly initialised and task-specific; the encoder is shared.
+
+        When ``self.separate_heads=False`` (legacy): creates a single
+        ``AutoModelForSequenceClassification`` with ``max(num_labels)`` output neurons
+        and relies on logit masking in ``_train_epoch``.
 
         Args:
             base_model_id: HuggingFace model ID or path
@@ -424,24 +436,36 @@ class BaseTrainingMethod(ABC):
         Returns:
             Initialized model
         """
-        from src.models.loaders import load_model
+        task_names = sorted(dataset_configs.keys())
 
-        # Use max num_labels across all tasks
-        max_labels = max(cfg.num_labels for cfg in dataset_configs.values())
+        if self.separate_heads:
+            from src.models.multi_task import create_multi_task_model
 
-        logger.info(f"\nInitializing model from {base_model_id}")
-        logger.info(f"  Using {max_labels} output labels (max across tasks)")
-        if cache_dir:
-            logger.info(f"  Cache directory: {cache_dir}")
+            num_labels_per_task = {name: dataset_configs[name].num_labels for name in task_names}
+            logger.info(f"\nInitializing MultiTaskModel (separate_heads=True) from {base_model_id}")
+            if cache_dir:
+                logger.info(f"  Cache directory: {cache_dir}")
+            return create_multi_task_model(
+                base_model_id=base_model_id,
+                task_names=task_names,
+                num_labels_per_task=num_labels_per_task,
+                cache_dir=cache_dir,
+                device=device,
+            )
+        else:
+            from src.models.loaders import load_model
 
-        model = load_model(
-            model_id=base_model_id,
-            num_labels=max_labels,
-            device=device,
-            cache_dir=cache_dir,
-        )
-
-        return model
+            max_labels = max(cfg.num_labels for cfg in dataset_configs.values())
+            logger.info(f"\nInitializing model (separate_heads=False, legacy) from {base_model_id}")
+            logger.info(f"  Using {max_labels} output labels (max across tasks)")
+            if cache_dir:
+                logger.info(f"  Cache directory: {cache_dir}")
+            return load_model(
+                model_id=base_model_id,
+                num_labels=max_labels,
+                device=device,
+                cache_dir=cache_dir,
+            )
 
     def _setup_optimizer(self, model: torch.nn.Module, train_dataloaders: Dict) -> Tuple[torch.optim.Optimizer, Any]:
         """
@@ -620,13 +644,17 @@ class BaseTrainingMethod(ABC):
                     # Get task-specific num_labels
                     task_num_labels = dataset_configs[task_name].num_labels
 
+                    # Route through task-specific head (MultiTaskModel) or shared head (legacy)
+                    if hasattr(model, "set_task"):
+                        model.set_task(task_name)
+
                     # Forward pass without computing loss (we'll compute it manually)
                     labels = batch.pop("labels")
                     outputs = model(**batch)
 
-                    # Mask logits to only use the first task_num_labels classes
-                    # This ensures tasks with fewer labels don't have their loss
-                    # contaminated by untrained/random weights for extra classes
+                    # Mask logits to only use the first task_num_labels classes.
+                    # For MultiTaskModel each head already outputs exactly task_num_labels
+                    # logits, so this slice is a no-op but harmless.
                     logits = outputs.logits[:, :task_num_labels]
 
                     # Compute cross-entropy loss with masked logits
@@ -735,18 +763,18 @@ class BaseTrainingMethod(ABC):
         epoch_checkpoint_dir: Optional[str] = None,
         model_identifier: Optional[str] = None,
         reference_losses: Optional[Dict] = None,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        Train model using multi-task learning and return task vector
+        Train model using multi-task learning and return task vector(s).
 
-        This method trains a new model from the base model using multi-task
-        optimization, then returns the task vector (fine-tuned - base).
+        When ``self.separate_heads=True``:
+            Returns ``Dict[str, torch.Tensor]`` — one flat task vector per task.
+            Each vector contains the encoder delta (trained − pretrained) plus the
+            task-specific head weights (in standard HF key order, compatible with
+            ``AutoModelForSequenceClassification``).
 
-        The returned task vector represents the parameter changes learned
-        during training. It can be:
-        - Applied to the base model: merged_model = base + task_vector
-        - Combined with other task vectors using merging methods
-        - Evaluated directly in the benchmark
+        When ``self.separate_heads=False`` (legacy):
+            Returns a single flat ``torch.Tensor`` (fine_tuned_params − base_params).
 
         Args:
             base_model: Base model ID or path to fine-tune from (e.g., "FacebookAI/roberta-base")
@@ -761,10 +789,6 @@ class BaseTrainingMethod(ABC):
             reference_losses: Optional dict mapping task name to {"utopia": float, "nadir": float}.
                               When provided, passed to _get_training_kwargs() so subclasses can use
                               precomputed reference losses (e.g. Chebyshev) instead of recomputing them.
-
-        Returns:
-            Task vector (flattened 1D tensor): fine_tuned_params - base_params
-            This represents the parameter delta learned during training.
         """
         import copy
 
@@ -1070,35 +1094,73 @@ class BaseTrainingMethod(ABC):
             logger.info("\nCleaning up epoch checkpoints after successful training...")
             self._cleanup_old_checkpoints(epoch_checkpoint_dir, model_identifier, keep_epoch=None)
 
-        task_vector_dict = {}
-
-        for name, param in trained_state_dict.items():
-            if name in base_state_dict:
-                task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
-
-        # Diagnostic: log norms of key task vector components to verify correctness
-        classifier_keys = [k for k in task_vector_dict if not k.startswith(model.base_model_prefix + ".")]
-        backbone_keys = [k for k in task_vector_dict if k.startswith(model.base_model_prefix + ".")]
-        if classifier_keys:
-            clf_norm = sum(task_vector_dict[k].norm().item() ** 2 for k in classifier_keys) ** 0.5
-            clf_trained_norm = sum(trained_state_dict[k].cpu().norm().item() ** 2 for k in classifier_keys) ** 0.5
-            logger.info(f"  Task vector diagnostic — classifier L2 norm: {clf_norm:.6f}  (trained weights norm: {clf_trained_norm:.6f})")
-        if backbone_keys:
-            bb_norm = sum(task_vector_dict[k].norm().item() ** 2 for k in backbone_keys[:5]) ** 0.5
-            logger.info(f"  Task vector diagnostic — backbone L2 norm (first 5 params): {bb_norm:.6f}")
-        logger.info(f"  Task vector diagnostic — total params: {len(task_vector_dict)}, total elements: {sum(v.numel() for v in task_vector_dict.values())}")
-        logger.info(f"  Task vector diagnostic — key order (first 3, last 3): {list(task_vector_dict.keys())[:3]} ... {list(task_vector_dict.keys())[-3:]}")
-
-        # 13. Flatten and return
+        # 13. Extract task vector(s) and return
         from src.benchmarks.run import flatten_task_vector
 
-        flattened = flatten_task_vector(task_vector_dict)
-        logger.info(f"  Task vector diagnostic — flat vector size: {flattened.numel()}, norm: {flattened.norm().item():.6f}")
+        if self.separate_heads:
+            # ── Separate heads: produce one flat vector per task ──────────────────
+            # Each vector = encoder delta (trained − pretrained) + task head weights
+            # in standard HF key order (roberta.* then classifier.*), compatible
+            # with create_base_model(num_labels=task.num_labels) + apply_task_vector.
+            from src.models.loaders import load_model as _load_model
+            from src.models.multi_task import extract_per_task_state_dicts
 
-        logger.info(f"{self.__class__.__name__} completed!")
-        logger.info("=" * 80)
+            pretrained_enc = {k: v for k, v in base_state_dict.items() if k.startswith("roberta.")}
+            per_task_states = extract_per_task_state_dicts(
+                trained_state_dict, task_names, pretrained_enc
+            )
 
-        return flattened
+            # Build an HF-model template per unique num_labels to get the canonical
+            # key order for flattening (keys must align with the template used in run.py).
+            templates: Dict[int, list] = {}
+            for task_name in task_names:
+                nl = dataset_configs[task_name].num_labels
+                if nl not in templates:
+                    tmpl = _load_model(base_model, num_labels=nl, cache_dir=model_cache_dir, zero_classifier=True)
+                    templates[nl] = list(tmpl.state_dict().keys())
+                    del tmpl
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+
+            per_task_flat: Dict[str, torch.Tensor] = {}
+            for task_name in task_names:
+                nl = dataset_configs[task_name].num_labels
+                key_order = templates[nl]
+                task_state = per_task_states[task_name]
+                tensors = [task_state[k] for k in key_order if k in task_state]
+                per_task_flat[task_name] = torch.cat([t.flatten() for t in tensors])
+                logger.info(
+                    f"  Task vector [{task_name}]: size={per_task_flat[task_name].numel()}, "
+                    f"norm={per_task_flat[task_name].norm().item():.6f}"
+                )
+
+            logger.info(f"{self.__class__.__name__} completed! (separate_heads=True)")
+            logger.info("=" * 80)
+            return per_task_flat
+
+        else:
+            # ── Legacy: single shared head → single flat vector ───────────────────
+            task_vector_dict = {}
+            for name, param in trained_state_dict.items():
+                if name in base_state_dict:
+                    task_vector_dict[name] = param.cpu() - base_state_dict[name].cpu()
+
+            classifier_keys = [k for k in task_vector_dict if not k.startswith(model.base_model_prefix + ".")]
+            backbone_keys = [k for k in task_vector_dict if k.startswith(model.base_model_prefix + ".")]
+            if classifier_keys:
+                clf_norm = sum(task_vector_dict[k].norm().item() ** 2 for k in classifier_keys) ** 0.5
+                logger.info(f"  Task vector diagnostic — classifier L2 norm: {clf_norm:.6f}")
+            if backbone_keys:
+                bb_norm = sum(task_vector_dict[k].norm().item() ** 2 for k in backbone_keys[:5]) ** 0.5
+                logger.info(f"  Task vector diagnostic — backbone L2 norm (first 5 params): {bb_norm:.6f}")
+            logger.info(f"  Task vector diagnostic — total params: {len(task_vector_dict)}, total elements: {sum(v.numel() for v in task_vector_dict.values())}")
+
+            flattened = flatten_task_vector(task_vector_dict)
+            logger.info(f"  Task vector diagnostic — flat vector size: {flattened.numel()}, norm: {flattened.norm().item():.6f}")
+
+            logger.info(f"{self.__class__.__name__} completed! (separate_heads=False, legacy)")
+            logger.info("=" * 80)
+            return flattened
 
     def _save_trained_model(self, state_dict: dict, save_path: str) -> None:
         """
