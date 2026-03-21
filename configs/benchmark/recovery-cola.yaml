@@ -13,6 +13,9 @@ benchmark:
     batch_size: 32
     num_samples: null
     reference_num_samples: null
+    # Single-task benchmark: cross_eval with 1 expert is degenerate (nadir = utopia).
+    # Use random_baseline for single-task recovery runs.
+    nadir_method: "random_baseline"
     metrics:
       - name: accuracy
         plots: []

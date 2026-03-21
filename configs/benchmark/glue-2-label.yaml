@@ -29,6 +29,10 @@ benchmark:
     batch_size: 32
     num_samples: null  # null = use full dataset, integer = limit samples
     reference_num_samples: null  # null = use full reference split for utopia/nadir computation
+    # Nadir point method for Chebyshev/EPO normalization:
+    #   "cross_eval"      (default): z_nad_t = max_s R^t(theta^s) — worst expert loss on task t
+    #   "random_baseline" (legacy):  z_nad_t = R^t(base model with random head) — ~log(num_classes)
+    nadir_method: "cross_eval"
     metrics:
       - name: accuracy
         plots: all                          # generate all available plot types

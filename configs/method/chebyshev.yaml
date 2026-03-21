@@ -30,7 +30,7 @@ method:
     # Performance optimization
     use_torch_compile: false
     torch_compile_mode: default  # default, reduce-overhead, max-autotune
-    use_gradient_checkpointing: false
+    use_gradient_checkpointing: true
 
     # Memory optimization
     use_fp16: true   # Mixed precision training (~1.5-2× speedup; <0.1 pp accuracy loss on GLUE)

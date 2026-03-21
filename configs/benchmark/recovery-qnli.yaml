@@ -13,6 +13,7 @@ benchmark:
     batch_size: 32
     num_samples: null
     reference_num_samples: null
+    nadir_method: "random_baseline"
     metrics:
       - name: accuracy
         plots: []

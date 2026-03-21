@@ -28,6 +28,7 @@ benchmark:
     batch_size: 32
     num_samples: null  # null = use full dataset, integer = limit samples
     reference_num_samples: null  # null = use full reference split for utopia/nadir computation
+    nadir_method: "cross_eval"   # "cross_eval" (default) or "random_baseline" (legacy)
     metrics:
       - name: accuracy
         plots: all                          # generate all available plot types

@@ -1,8 +1,20 @@
 """Compute reference losses (utopia + nadir) for the Chebyshev training objective.
 
 The utopia loss is the average cross-entropy loss of the task-specific fine-tuned model
-on the reference split. The nadir loss is the same for the base model with a randomly
-initialized classification head.
+on the reference split (diagonal of the cross-evaluation matrix):
+    z_star_t = R^t(theta^t)
+
+Two nadir methods are supported (controlled by cfg.benchmark.evaluation.nadir_method):
+
+  "cross_eval" (default, recommended):
+    The nadir is the worst-case loss on each task among all fine-tuned expert models:
+        z_nad_t = max_s R^t(theta^s)
+    This is the theoretically correct nadir for the normalised Chebyshev/EPO objective,
+    as it bounds the losses of all expert models from above.
+
+  "random_baseline" (legacy):
+    The nadir is the loss of the base model with a randomly initialised classification
+    head on the same reference split. Kept for reproducibility of old runs.
 
 Both are evaluated on the first half of a stratified 50/50 split of the test (or
 validation) split. The second half is reserved for benchmark evaluation, ensuring that
@@ -12,6 +24,7 @@ evaluation.
 
 import gc
 import logging
+import math
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -33,13 +46,14 @@ def compute_reference_losses(
     device: torch.device,
 ) -> Dict[str, Dict[str, float]]:
     """
-    Compute utopia and nadir losses for the Chebyshev scalarization training objective.
+    Compute utopia and nadir losses for the Chebyshev/EPO training objective.
 
     For each task:
       - utopia_loss: avg cross-entropy of the task-specific fine-tuned model on the
                      reference split (first half of stratified test/validation split)
-      - nadir_loss:  avg cross-entropy of the base model (random classification head)
-                     on the same reference split
+      - nadir_loss:  depends on cfg.benchmark.evaluation.nadir_method:
+          "cross_eval" (default): max loss on task t across all fine-tuned expert models
+          "random_baseline": loss of the base model with random classification head
 
     The reference split is always the FIRST half of a stratified 50/50 split applied
     to the test (or validation, for GLUE tasks) split. The second half is reserved for
@@ -51,7 +65,7 @@ def compute_reference_losses(
         device: Device to evaluate on
 
     Returns:
-        Dictionary: {"ag_news": {"utopia": 0.13, "nadir": 1.39}, ...}
+        Dictionary: {"cola": {"utopia": 0.38, "nadir": 0.55}, ...}
     """
     task_names_tuple = tuple(task_names)
     model_id = cfg.model.hf_model_id
@@ -68,6 +82,7 @@ def compute_reference_losses(
     }
     torch_dtype = cfg.model.loading.torch_dtype
     batch_size = cfg.benchmark.evaluation.batch_size
+    nadir_method = cfg.benchmark.evaluation.get("nadir_method", "cross_eval")
 
     return _compute_reference_losses_cached(
         task_names_tuple=task_names_tuple,
@@ -78,6 +93,7 @@ def compute_reference_losses(
         paths=paths,
         torch_dtype=torch_dtype,
         batch_size=batch_size,
+        nadir_method=nadir_method,
         device_str=str(device),
     )
 
@@ -92,6 +108,7 @@ def _compute_reference_losses_cached(
     paths: dict,
     torch_dtype: str,
     batch_size: int,
+    nadir_method: str,  # "cross_eval" or "random_baseline"
     device_str: str,  # str instead of torch.device for stable Joblib hashing
 ) -> Dict[str, Dict[str, float]]:
     """Cached implementation. Cache invalidates when any argument changes."""
@@ -100,23 +117,24 @@ def _compute_reference_losses_cached(
     dataset_configs = {task: OmegaConf.create(cfg_dict) for task, cfg_dict in dataset_configs.items()}
     task_names = list(task_names_tuple)
 
-    logger.info("Cache miss — computing reference losses from scratch")
+    logger.info(f"Cache miss — computing reference losses from scratch (nadir_method={nadir_method!r})")
 
     tokenizer = load_tokenizer(
         model_id=model_id,
         cache_dir=Path(paths["hf_models_cache_base"]) if paths["hf_models_cache_base"] else None,
     )
 
-    reference_losses = {}
+    # --- Step 1: Build per-task reference dataloaders and compute utopia losses ---
+    # Utopia = fine-tuned expert on its own task (diagonal of cross-eval matrix)
+    dataloaders: Dict[str, DataLoader] = {}
+    utopia_losses: Dict[str, float] = {}
 
     for task_name in task_names:
         task_cfg = dataset_configs[task_name]
-        logger.info(f"\nComputing reference losses for {task_name}...")
+        logger.info(f"\nComputing utopia loss for {task_name}...")
 
-        # Load the reference split (first half of stratified test/validation split)
         reference_dataset = _load_reference_split(task_cfg, paths, reference_num_samples, split_seed)
 
-        # Preprocess once for both utopia and nadir
         processed = preprocess_dataset(
             dataset=reference_dataset,
             tokenizer=tokenizer,
@@ -135,8 +153,8 @@ def _compute_reference_losses_cached(
             shuffle=False,
             collate_fn=default_data_collator,
         )
+        dataloaders[task_name] = dataloader
 
-        # --- Utopia: fine-tuned model loss ---
         ft_model = load_model(
             model_id=task_cfg.finetuned_checkpoint,
             num_labels=None,  # preserve fine-tuned weights
@@ -145,36 +163,199 @@ def _compute_reference_losses_cached(
             torch_dtype=torch_dtype,
         )
         ft_model.eval()
-        utopia_loss = _compute_average_loss(ft_model, dataloader, device)
-        logger.info(f"  Utopia loss ({task_name}): {utopia_loss:.4f}")
+        utopia_losses[task_name] = _compute_average_loss(ft_model, dataloader, device)
+        logger.info(f"  Utopia loss ({task_name}): {utopia_losses[task_name]:.4f}")
         del ft_model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
 
-        # --- Nadir: base model loss (random classification head) ---
+        del reference_dataset, processed
+        gc.collect()
+
+    # --- Step 2: Compute nadir losses ---
+    if nadir_method == "cross_eval":
+        nadir_losses = _compute_cross_eval_nadir(
+            task_names=task_names,
+            dataset_configs=dataset_configs,
+            dataloaders=dataloaders,
+            utopia_losses=utopia_losses,
+            paths=paths,
+            torch_dtype=torch_dtype,
+            device=device,
+        )
+    elif nadir_method == "random_baseline":
+        nadir_losses = _compute_random_baseline_nadir(
+            task_names=task_names,
+            dataset_configs=dataset_configs,
+            dataloaders=dataloaders,
+            model_id=model_id,
+            paths=paths,
+            torch_dtype=torch_dtype,
+            device=device,
+        )
+    else:
+        raise ValueError(f"Unknown nadir_method={nadir_method!r}. Choose 'cross_eval' or 'random_baseline'.")
+
+    # --- Step 3: Assemble and log results ---
+    reference_losses = {}
+    task_width = max(len(t) for t in task_names)
+    logger.info("\n" + "=" * 60)
+    logger.info(f"  Reference losses (nadir_method={nadir_method!r})")
+    logger.info("=" * 60)
+    logger.info(f"  {'Task':<{task_width}}  {'Utopia':>10}  {'Nadir':>10}  {'Scale':>10}")
+    logger.info(f"  {'-'*task_width}  {'-'*10}  {'-'*10}  {'-'*10}")
+    for task_name in task_names:
+        u = utopia_losses[task_name]
+        n = nadir_losses[task_name]
+        scale = n - u
+        if scale <= 0:
+            logger.warning(
+                f"  ⚠ DEGENERATE: nadir ({n:.4f}) <= utopia ({u:.4f}) for task '{task_name}'. "
+                f"The normalization scale is non-positive — check the cross-eval matrix."
+            )
+        logger.info(f"  {task_name:<{task_width}}  {u:>10.4f}  {n:>10.4f}  {scale:>10.4f}")
+        reference_losses[task_name] = {"utopia": u, "nadir": n}
+    logger.info("=" * 60)
+
+    return reference_losses
+
+
+def _compute_cross_eval_nadir(
+    task_names: List[str],
+    dataset_configs: dict,
+    dataloaders: Dict[str, DataLoader],
+    utopia_losses: Dict[str, float],
+    paths: dict,
+    torch_dtype: str,
+    device: torch.device,
+) -> Dict[str, float]:
+    """
+    Compute nadir via cross-evaluation: for each task t, the nadir is the worst
+    (highest) cross-entropy loss on task t across all fine-tuned expert models.
+
+        z_nad_t = max_s R^t(theta^s)
+
+    Each expert theta^s is loaded once and evaluated on all tasks, which reduces
+    the number of model loads from T^2 to T (same as for the random baseline).
+
+    Args:
+        task_names: Ordered list of task names
+        dataset_configs: Plain-dict dataset configs (already converted from DictConfig)
+        dataloaders: Pre-built per-task reference dataloaders (keyed by task name)
+        utopia_losses: Utopia (diagonal) losses already computed (for logging)
+        paths: Path config dict
+        torch_dtype: Model loading dtype
+        device: Evaluation device
+
+    Returns:
+        Dict mapping task_name -> nadir loss (max loss across all experts)
+    """
+    logger.info("\nComputing cross-eval nadir: evaluating each expert on all tasks...")
+    # cross_losses[source_task][eval_task] = loss
+    cross_losses: Dict[str, Dict[str, float]] = {}
+
+    for source_task in task_names:
+        source_cfg = dataset_configs[source_task]
+        logger.info(f"\n  Loading expert for {source_task}...")
+
+        expert_model = load_model(
+            model_id=source_cfg.finetuned_checkpoint,
+            num_labels=None,  # preserve fine-tuned weights
+            cache_dir=Path(paths["hf_models_cache_finetuned"]) if paths["hf_models_cache_finetuned"] else None,
+            device=device,
+            torch_dtype=torch_dtype,
+        )
+        expert_model.eval()
+
+        cross_losses[source_task] = {}
+        for eval_task in task_names:
+            eval_cfg = dataset_configs[eval_task]
+            # Check num_labels compatibility
+            expert_num_labels = expert_model.config.num_labels
+            task_num_labels = eval_cfg["num_labels"]
+            if expert_num_labels != task_num_labels:
+                logger.warning(
+                    f"  ⚠ Skipping expert({source_task}) on task({eval_task}): "
+                    f"num_labels mismatch ({expert_num_labels} vs {task_num_labels}). "
+                    f"This pair will not contribute to the nadir."
+                )
+                cross_losses[source_task][eval_task] = float("nan")
+                continue
+
+            loss = _compute_average_loss(expert_model, dataloaders[eval_task], device)
+            cross_losses[source_task][eval_task] = loss
+            logger.info(f"    expert({source_task}) → task({eval_task}): loss={loss:.4f}")
+
+        del expert_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+    # Log the full cross-eval loss matrix
+    task_width = max(len(t) for t in task_names)
+    logger.info("\n  Cross-eval loss matrix (rows=expert, cols=evaluated task):")
+    header = f"  {'expert \\ task':<{task_width}}" + "".join(f"  {t:>10}" for t in task_names)
+    logger.info(header)
+    for source in task_names:
+        row = f"  {source:<{task_width}}"
+        for ev in task_names:
+            v = cross_losses[source][ev]
+            row += f"  {v:>10.4f}" if not (isinstance(v, float) and v != v) else f"  {'skip':>10}"
+        logger.info(row)
+
+    # Compute nadir = column-wise max (ignoring NaN)
+    nadir_losses: Dict[str, float] = {}
+    for eval_task in task_names:
+        valid = [
+            cross_losses[src][eval_task]
+            for src in task_names
+            if not (isinstance(cross_losses[src][eval_task], float) and math.isnan(cross_losses[src][eval_task]))
+        ]
+        if not valid:
+            raise RuntimeError(
+                f"No valid cross-eval loss for task '{eval_task}' — all expert/task pairs "
+                f"were skipped due to num_labels mismatches. Cannot compute nadir."
+            )
+        nadir_losses[eval_task] = max(valid)
+
+    return nadir_losses
+
+
+def _compute_random_baseline_nadir(
+    task_names: List[str],
+    dataset_configs: dict,
+    dataloaders: Dict[str, DataLoader],
+    model_id: str,
+    paths: dict,
+    torch_dtype: str,
+    device: torch.device,
+) -> Dict[str, float]:
+    """
+    Compute nadir via random baseline: loss of the base model with a randomly
+    initialised classification head on the reference split (legacy method).
+    """
+    logger.info("\nComputing random-baseline nadir: evaluating base model with random classification head...")
+    nadir_losses: Dict[str, float] = {}
+
+    for task_name in task_names:
+        task_cfg = dataset_configs[task_name]
         base_model = load_model(
             model_id=model_id,
-            num_labels=task_cfg.num_labels,
+            num_labels=task_cfg["num_labels"],
             cache_dir=Path(paths["hf_models_cache_base"]) if paths["hf_models_cache_base"] else None,
             device=device,
             torch_dtype=torch_dtype,
         )
         base_model.eval()
-        nadir_loss = _compute_average_loss(base_model, dataloader, device)
-        logger.info(f"  Nadir loss ({task_name}):  {nadir_loss:.4f}")
+        nadir_losses[task_name] = _compute_average_loss(base_model, dataloaders[task_name], device)
+        logger.info(f"  Nadir loss ({task_name}):  {nadir_losses[task_name]:.4f}")
         del base_model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
 
-        reference_losses[task_name] = {"utopia": utopia_loss, "nadir": nadir_loss}
-
-        del reference_dataset, processed, dataloader
-        gc.collect()
-
-    logger.info(f"\n Reference losses computed: {reference_losses}")
-    return reference_losses
+    return nadir_losses
 
 
 def _load_reference_split(task_cfg, paths: dict, num_samples: Optional[int], split_seed: int):
