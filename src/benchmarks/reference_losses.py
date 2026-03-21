@@ -7,10 +7,11 @@ on the reference split (diagonal of the cross-evaluation matrix):
 Two nadir methods are supported (controlled by cfg.benchmark.evaluation.nadir_method):
 
   "cross_eval" (default, recommended):
-    The nadir is the worst-case loss on each task among all fine-tuned expert models:
-        z_nad_t = max_s R^t(theta^s)
-    This is the theoretically correct nadir for the normalised Chebyshev/EPO objective,
-    as it bounds the losses of all expert models from above.
+    The nadir is the worst-case loss on task t when the encoder comes from a different
+    expert s but the head is always the task-appropriate one (head_t):
+        z_nad_t = max_s  R^t( encoder_s + head_t )
+    This is the correct formulation for the separate-heads architecture: high losses
+    come from an off-task encoder, not from a semantically mismatched head.
 
   "random_baseline" (legacy):
     The nadir is the loss of the base model with a randomly initialised classification
@@ -52,7 +53,7 @@ def compute_reference_losses(
       - utopia_loss: avg cross-entropy of the task-specific fine-tuned model on the
                      reference split (first half of stratified test/validation split)
       - nadir_loss:  depends on cfg.benchmark.evaluation.nadir_method:
-          "cross_eval" (default): max loss on task t across all fine-tuned expert models
+          "cross_eval" (default): max loss on task t across encoder_s + head_t combinations
           "random_baseline": loss of the base model with random classification head
 
     The reference split is always the FIRST half of a stratified 50/50 split applied
@@ -231,13 +232,22 @@ def _compute_cross_eval_nadir(
     device: torch.device,
 ) -> Dict[str, float]:
     """
-    Compute nadir via cross-evaluation: for each task t, the nadir is the worst
-    (highest) cross-entropy loss on task t across all fine-tuned expert models.
+    Compute nadir via cross-evaluation with correct multi-head semantics.
 
-        z_nad_t = max_s R^t(theta^s)
+    For each (encoder from expert s, head from expert t) combination, evaluate on
+    task t's reference split.  The nadir for task t is the worst loss across all
+    encoder sources:
 
-    Each expert theta^s is loaded once and evaluated on all tasks, which reduces
-    the number of model loads from T^2 to T (same as for the random baseline).
+        z_nad_t = max_s  R^t( encoder_s  +  head_t )
+
+    This is the correct formulation for the separate-heads architecture: the head
+    is always the task-appropriate one, so high nadir losses come from an
+    off-task *encoder* struggling to produce useful representations for task t —
+    not from a mismatched head predicting semantically wrong labels.
+
+    Implementation: T CPU pre-loads (expert heads only) + T GPU model loads
+    (one per source encoder), with in-place head swapping for each eval task.
+    Total model loads = 2T instead of T^2.
 
     Args:
         task_names: Ordered list of task names
@@ -249,43 +259,76 @@ def _compute_cross_eval_nadir(
         device: Evaluation device
 
     Returns:
-        Dict mapping task_name -> nadir loss (max loss across all experts)
+        Dict mapping task_name -> nadir loss (max loss across all encoder/head combos)
     """
-    logger.info("\nComputing cross-eval nadir: evaluating each expert on all tasks...")
-    # cross_losses[source_task][eval_task] = loss
+    finetuned_cache = Path(paths["hf_models_cache_finetuned"]) if paths["hf_models_cache_finetuned"] else None
+
+    # --- Pre-load step: collect all expert heads on CPU (classifier.* params only) ---
+    logger.info("\nPre-loading expert heads to CPU for cross-evaluation...")
+    expert_heads_cpu: Dict[str, Dict[str, torch.Tensor]] = {}
+    for task in task_names:
+        cfg_t = dataset_configs[task]
+        m = load_model(
+            model_id=cfg_t.finetuned_checkpoint,
+            num_labels=None,
+            cache_dir=finetuned_cache,
+            device=torch.device("cpu"),
+            torch_dtype=torch_dtype,
+        )
+        expert_heads_cpu[task] = {
+            k: v.clone() for k, v in m.state_dict().items() if k.startswith("classifier.")
+        }
+        del m
+        gc.collect()
+        logger.info(f"  Cached head for {task}: {list(expert_heads_cpu[task].keys())}")
+
+    # --- Main loop: for each source encoder, swap head per eval task and evaluate ---
+    logger.info("\nComputing cross-eval nadir: encoder(s) + head(t) evaluated on task(t)...")
     cross_losses: Dict[str, Dict[str, float]] = {}
 
     for source_task in task_names:
         source_cfg = dataset_configs[source_task]
-        logger.info(f"\n  Loading expert for {source_task}...")
+        logger.info(f"\n  Loading encoder for source={source_task}...")
 
         expert_model = load_model(
             model_id=source_cfg.finetuned_checkpoint,
-            num_labels=None,  # preserve fine-tuned weights
-            cache_dir=Path(paths["hf_models_cache_finetuned"]) if paths["hf_models_cache_finetuned"] else None,
+            num_labels=None,
+            cache_dir=finetuned_cache,
             device=device,
             torch_dtype=torch_dtype,
         )
         expert_model.eval()
 
+        # Build a fast lookup: param name → Parameter object (for in-place copy)
+        named_params = dict(expert_model.named_parameters())
+
         cross_losses[source_task] = {}
         for eval_task in task_names:
-            eval_cfg = dataset_configs[eval_task]
-            # Check num_labels compatibility
-            expert_num_labels = expert_model.config.num_labels
-            task_num_labels = eval_cfg["num_labels"]
-            if expert_num_labels != task_num_labels:
+            eval_head = expert_heads_cpu[eval_task]
+
+            # Verify shape compatibility before swapping
+            shape_mismatch = [
+                name for name, head_p in eval_head.items()
+                if name in named_params and named_params[name].shape != head_p.shape
+            ]
+            if shape_mismatch:
                 logger.warning(
-                    f"  ⚠ Skipping expert({source_task}) on task({eval_task}): "
-                    f"num_labels mismatch ({expert_num_labels} vs {task_num_labels}). "
+                    f"  ⚠ Skipping encoder({source_task}) + head({eval_task}): "
+                    f"head param shape mismatch for {shape_mismatch}. "
                     f"This pair will not contribute to the nadir."
                 )
                 cross_losses[source_task][eval_task] = float("nan")
                 continue
 
+            # Swap classifier weights in-place
+            with torch.no_grad():
+                for name, head_p in eval_head.items():
+                    if name in named_params:
+                        named_params[name].copy_(head_p.to(device))
+
             loss = _compute_average_loss(expert_model, dataloaders[eval_task], device)
             cross_losses[source_task][eval_task] = loss
-            logger.info(f"    expert({source_task}) → task({eval_task}): loss={loss:.4f}")
+            logger.info(f"    encoder({source_task}) + head({eval_task}) → task({eval_task}): loss={loss:.4f}")
 
         del expert_model
         if torch.cuda.is_available():

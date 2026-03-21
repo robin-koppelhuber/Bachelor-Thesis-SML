@@ -117,33 +117,68 @@ def evaluate_saved_model(
     for task_name in cfg.benchmark.tasks:
         dataset_configs[task_name] = cfg.datasets[task_name]
 
-    # Load base model and compute task vector from saved model
-    logger.info("\nComputing task vector from saved model...")
-    max_labels = max(ds.num_labels for ds in dataset_configs.values())
-    base_model = create_base_model(max_labels)
-    base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
-
     # Load trained model state
     trained_state_dict = load_saved_model_state(model_path, device)
 
-    # Compute task vector
-    task_vector_dict = {
-        name: param.cpu() - base_state_dict[name]
-        for name, param in trained_state_dict.items()
-        if name in base_state_dict
-    }
+    # Detect checkpoint format:
+    #   MultiTaskModel → keys contain "heads.*" (separate_heads=True)
+    #   Legacy HF model → keys contain "classifier.*"
+    is_multi_head = any(k.startswith("heads.") for k in trained_state_dict)
+    logger.info(f"  Checkpoint format: {'MultiTaskModel (separate_heads)' if is_multi_head else 'legacy HF model'}")
 
-    # Create task vector template for unflattening
-    task_vector_template = task_vector_dict
+    if is_multi_head:
+        # MultiTaskModel checkpoint: roberta.* + heads.{task}.* keys.
+        # Extract per-task state dicts in HF format (roberta.* + classifier.*),
+        # then build a per-task flat vector map for evaluation.
+        from src.models.multi_task import extract_per_task_state_dicts
 
-    # Flatten for consistency (even though we'll unflatten immediately)
-    merged_flat = flatten_task_vector(task_vector_dict)
-    merged_task_vector = unflatten_task_vector(merged_flat, task_vector_template)
+        pretrained_base = create_base_model(num_labels=2)
+        pretrained_enc = {
+            k: v.cpu() for k, v in pretrained_base.state_dict().items()
+            if k.startswith("roberta.")
+        }
+        del pretrained_base
 
-    logger.info(f"  Task vector size: {merged_flat.shape[0]:,} parameters")
+        task_names_list = list(cfg.benchmark.tasks)
+        per_task_states = extract_per_task_state_dicts(
+            {k: v.cpu() for k, v in trained_state_dict.items()},
+            task_names_list,
+            pretrained_enc,
+        )
+        del trained_state_dict
 
-    # Clean up
-    del base_model, trained_state_dict, task_vector_dict
+        # Build per-task flat vectors using canonical HF key order
+        _nl_templates: Dict[int, list] = {}
+        per_task_flat: Dict[str, torch.Tensor] = {}
+        for tname in task_names_list:
+            nl = dataset_configs[tname].num_labels
+            if nl not in _nl_templates:
+                _tmpl = create_base_model(num_labels=nl)
+                _nl_templates[nl] = list(_tmpl.state_dict().keys())
+                del _tmpl
+            ts = per_task_states[tname]
+            per_task_flat[tname] = torch.cat([
+                ts[k].flatten() for k in _nl_templates[nl] if k in ts
+            ])
+            logger.info(f"  [{tname}] task vector size: {per_task_flat[tname].numel():,}")
+    else:
+        # Legacy single-head checkpoint: compute task vector as trained - base.
+        logger.info("\nComputing task vector from saved model...")
+        max_labels = max(ds.num_labels for ds in dataset_configs.values())
+        base_model = create_base_model(max_labels)
+        base_state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
+
+        task_vector_dict = {
+            name: param.cpu() - base_state_dict[name]
+            for name, param in trained_state_dict.items()
+            if name in base_state_dict
+        }
+        del base_model, trained_state_dict
+
+        merged_flat_legacy = flatten_task_vector(task_vector_dict)
+        merged_task_vector_legacy = unflatten_task_vector(merged_flat_legacy, task_vector_dict)
+        logger.info(f"  Task vector size: {merged_flat_legacy.shape[0]:,} parameters")
+
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -158,8 +193,16 @@ def evaluate_saved_model(
         # Create base model with correct num_labels for this task
         merged_model = create_base_model(dataset_cfg.num_labels)
 
-        # Apply merged task vector
-        merged_model = apply_task_vector(merged_model, merged_task_vector, scaling=1.0)
+        # Resolve task vector for this task
+        if is_multi_head:
+            nl = dataset_cfg.num_labels
+            tmpl_state = create_base_model(num_labels=nl).state_dict()
+            current_tv = unflatten_task_vector(per_task_flat[task_name], tmpl_state)
+        else:
+            current_tv = merged_task_vector_legacy
+
+        # Apply task vector
+        merged_model = apply_task_vector(merged_model, current_tv, scaling=1.0)
         merged_model.eval()
 
         # Load and preprocess test dataset
