@@ -825,10 +825,16 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             model_id = config_hash if is_training_based else None
             if _is_per_task:
-                _hash_bytes = str({t: v.tolist() for t, v in sorted(merged_flat.items())}).encode()
+                # Training method with separate heads: config_hash + preference already
+                # uniquely identify the trained model. Hashing the full tensor (125M floats)
+                # via tolist() would be prohibitively slow.
+                task_vec_hash = hashlib.md5(
+                    f"{config_hash}:{tuple(preference_array.tolist())}".encode()
+                ).hexdigest()[:12]
             else:
-                _hash_bytes = str(sorted(merged_task_vector.items())).encode()
-            task_vec_hash = hashlib.md5(_hash_bytes).hexdigest()[:12]
+                task_vec_hash = hashlib.md5(
+                    str(sorted(merged_task_vector.items())).encode()
+                ).hexdigest()[:12]
 
         # For each task, evaluate the merged model (with Joblib caching)
         task_results = {}
