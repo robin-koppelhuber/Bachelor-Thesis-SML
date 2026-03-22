@@ -515,65 +515,100 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         dataset_configs[task_name] = dataset_cfg
 
     # Only compute task vectors if needed by the method
+    # For merging methods with separate_heads=True, also store per-task classifier deltas.
+    _merging_separate_heads = requires_task_vectors and getattr(method, "separate_heads", False)
+    _classifier_delta_flat: Dict[str, torch.Tensor] = {}  # task -> flat classifier delta (separate_heads only)
+
     if requires_task_vectors:
-        # First pass: compute task vectors with their natural sizes
-        task_vector_sizes = {}  # Track original sizes for each task
+        enc_prefix = "roberta."  # TODO: make model-agnostic if needed
 
-        for task_name in cfg.benchmark.tasks:
-            logger.info(f"\nProcessing task: {task_name}")
-            dataset_cfg = dataset_configs[task_name]
+        if _merging_separate_heads:
+            # Separate-heads mode: merge encoder task vectors only; keep per-task classifier deltas.
+            logger.info("  separate_heads=True: extracting encoder-only task vectors + per-task classifier deltas")
+            for task_name in cfg.benchmark.tasks:
+                logger.info(f"\nProcessing task: {task_name}")
+                dataset_cfg = dataset_configs[task_name]
 
-            # Load base model for this task (with task-specific num_labels)
-            base_model = create_base_model(num_labels=dataset_cfg.num_labels)
+                base_model = create_base_model(num_labels=dataset_cfg.num_labels)
+                logger.info(f"  Loading fine-tuned model: {dataset_cfg.finetuned_checkpoint}")
+                finetuned_model = load_model(
+                    model_id=dataset_cfg.finetuned_checkpoint,
+                    num_labels=None,
+                    cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
+                    device=device,
+                    torch_dtype=cfg.model.loading.torch_dtype,
+                )
 
-            # Load fine-tuned model (don't pass num_labels to preserve fine-tuned weights)
-            logger.info(f"  Loading fine-tuned model: {dataset_cfg.finetuned_checkpoint}")
-            finetuned_model = load_model(
-                model_id=dataset_cfg.finetuned_checkpoint,
-                num_labels=None,  # Don't pass num_labels for fine-tuned models, otherwise weights might get reset
+                full_task_vector = compute_task_vector(finetuned_model, base_model)
+
+                # Encoder delta (same size for all tasks — no padding needed)
+                enc_tv = {k: v for k, v in full_task_vector.items() if k.startswith(enc_prefix)}
+                task_vectors_dict[task_name] = flatten_task_vector(enc_tv)
+
+                # Classifier delta (task-specific size; applied per-task at eval time)
+                clf_tv = {k: v for k, v in full_task_vector.items() if not k.startswith(enc_prefix)}
+                _classifier_delta_flat[task_name] = flatten_task_vector(clf_tv)
+
+                logger.info(f"  Encoder task vector: {task_vectors_dict[task_name].shape}, "
+                            f"classifier delta: {_classifier_delta_flat[task_name].shape}")
+
+                del base_model, finetuned_model
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+            # task_vector_template not needed (per-task unflattening uses _eval_templates)
+            task_vector_template = None
+
+        else:
+            # Standard mode: full task vectors (encoder + classifier) padded to max size.
+            task_vector_sizes = {}  # Track original sizes for each task
+
+            for task_name in cfg.benchmark.tasks:
+                logger.info(f"\nProcessing task: {task_name}")
+                dataset_cfg = dataset_configs[task_name]
+
+                base_model = create_base_model(num_labels=dataset_cfg.num_labels)
+
+                logger.info(f"  Loading fine-tuned model: {dataset_cfg.finetuned_checkpoint}")
+                finetuned_model = load_model(
+                    model_id=dataset_cfg.finetuned_checkpoint,
+                    num_labels=None,  # Don't pass num_labels for fine-tuned models, otherwise weights might get reset
+                    cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
+                    device=device,
+                    torch_dtype=cfg.model.loading.torch_dtype,
+                )
+
+                task_vector = compute_task_vector(finetuned_model, base_model)
+
+                task_vectors_dict[task_name] = flatten_task_vector(task_vector)
+                task_vector_sizes[task_name] = task_vectors_dict[task_name].shape[0]
+
+                logger.info(f"  Task vector shape: {task_vectors_dict[task_name].shape}")
+
+                del base_model, finetuned_model
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+            # Pad all task vectors to the maximum size
+            max_task_vector_size = max(task_vector_sizes.values())
+            logger.info(f"\nPadding task vectors to maximum size: {max_task_vector_size}")
+            task_vectors_dict = pad_task_vectors_to_match(task_vectors_dict, max_task_vector_size)
+
+            task_vector_original_sizes = task_vector_sizes
+
+            # Get a template for unflattening later (use task with max labels for template)
+            max_labels_task = max(dataset_configs.items(), key=lambda x: x[1].num_labels)[0]
+            logger.info(f"Using {max_labels_task} as template (has maximum num_labels)")
+
+            base_model_template = create_base_model(num_labels=dataset_configs[max_labels_task].num_labels)
+            finetuned_model_template = load_model(
+                model_id=dataset_configs[max_labels_task].finetuned_checkpoint,
+                num_labels=None,  # Don't pass num_labels for fine-tuned models
                 cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
                 device=device,
                 torch_dtype=cfg.model.loading.torch_dtype,
             )
-
-            # Compute task vector
-            task_vector = compute_task_vector(finetuned_model, base_model)
-
-            # Store flattened version for merging
-            task_vectors_dict[task_name] = flatten_task_vector(task_vector)
-            task_vector_sizes[task_name] = task_vectors_dict[task_name].shape[0]
-
-            logger.info(f"  Task vector shape: {task_vectors_dict[task_name].shape}")
-
-            # Clean up
-            del base_model, finetuned_model
+            task_vector_template = compute_task_vector(finetuned_model_template, base_model_template)
+            del base_model_template, finetuned_model_template
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
-        # Pad all task vectors to the maximum size
-        max_task_vector_size = max(task_vector_sizes.values())
-        logger.info(f"\nPadding task vectors to maximum size: {max_task_vector_size}")
-        # Keep tensors on their original device (don't force CPU)
-        task_vectors_dict = pad_task_vectors_to_match(task_vectors_dict, max_task_vector_size)
-
-        # Store original sizes for later unpadding
-        task_vector_original_sizes = task_vector_sizes
-
-        # Get a template for unflattening later (use task with max labels for template)
-        # Find task with maximum labels
-        max_labels_task = max(dataset_configs.items(), key=lambda x: x[1].num_labels)[0]
-        logger.info(f"Using {max_labels_task} as template (has maximum num_labels)")
-
-        base_model_template = create_base_model(num_labels=dataset_configs[max_labels_task].num_labels)
-        finetuned_model_template = load_model(
-            model_id=dataset_configs[max_labels_task].finetuned_checkpoint,
-            num_labels=None,  # Don't pass num_labels for fine-tuned models
-            cache_dir=Path(cfg.paths.hf_models_cache_finetuned) if cfg.paths.hf_models_cache_finetuned else None,
-            device=device,
-            torch_dtype=cfg.model.loading.torch_dtype,
-        )
-        task_vector_template = compute_task_vector(finetuned_model_template, base_model_template)
-        del base_model_template, finetuned_model_template
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
     else:
         logger.info("  ✓ Skipping task vector computation for training-based method")
         logger.info(f"  Collected {len(dataset_configs)} dataset configurations")
@@ -779,7 +814,18 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
         else:
             # Parameter merging method: merge pre-computed task vectors
             logger.info("Merging task vectors...")
-            merged_flat = method.merge(task_vectors=task_vectors_dict, preference_vector=preference_array)
+            merged_encoder_or_full = method.merge(task_vectors=task_vectors_dict, preference_vector=preference_array)
+
+            if _merging_separate_heads:
+                # Reconstruct per-task flat vectors: merged encoder delta + task-specific classifier delta.
+                # Key order matches create_base_model(num_labels=nl).state_dict(): roberta.* then classifier.*
+                merged_flat = {
+                    task_name: torch.cat([merged_encoder_or_full, _classifier_delta_flat[task_name]])
+                    for task_name in cfg.benchmark.tasks
+                }
+                logger.info(f"  Built per-task flat vectors (encoder={merged_encoder_or_full.shape[0]:,} params + per-task classifier)")
+            else:
+                merged_flat = merged_encoder_or_full
 
         # Determine whether merged_flat is per-task (separate_heads=True) or a single vector.
         _is_per_task = isinstance(merged_flat, dict)
@@ -825,12 +871,27 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
 
             model_id = config_hash if is_training_based else None
             if _is_per_task:
-                # Training method with separate heads: config_hash + preference already
-                # uniquely identify the trained model. Hashing the full tensor (125M floats)
-                # via tolist() would be prohibitively slow.
-                task_vec_hash = hashlib.md5(
-                    f"{config_hash}:{tuple(preference_array.tolist())}".encode()
-                ).hexdigest()[:12]
+                if is_training_based:
+                    # Training method with separate heads: config_hash + preference already
+                    # uniquely identify the trained model. Hashing the full tensor (125M floats)
+                    # via tolist() would be prohibitively slow.
+                    task_vec_hash = hashlib.md5(
+                        f"{config_hash}:{tuple(preference_array.tolist())}".encode()
+                    ).hexdigest()[:12]
+                else:
+                    # Merging method with separate_heads=True: hash method config + preference.
+                    # The merged model is a deterministic function of these given fixed expert checkpoints.
+                    import json as _json
+                    _nontrain_hash_str = _json.dumps(
+                        {
+                            "method": cfg.method.name,
+                            "preference": preference_array.tolist(),
+                            "params": OmegaConf.to_container(cfg.method.params, resolve=True),
+                            "tasks": sorted(OmegaConf.to_container(cfg.benchmark.tasks, resolve=True)),
+                        },
+                        sort_keys=True,
+                    )
+                    task_vec_hash = hashlib.md5(_nontrain_hash_str.encode()).hexdigest()[:12]
             else:
                 task_vec_hash = hashlib.md5(
                     str(sorted(merged_task_vector.items())).encode()

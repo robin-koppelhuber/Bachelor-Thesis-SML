@@ -6,3 +6,4 @@ method:
 
   params:
     normalize_preferences: true
+    separate_heads: true  # Merge encoder only; route each task to its fine-tuned classifier head

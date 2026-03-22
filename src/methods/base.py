@@ -15,14 +15,18 @@ logger = logging.getLogger(__name__)
 class BaseMergingMethod(ABC):
     """Base class for model merging methods"""
 
-    def __init__(self, **kwargs):
+    def __init__(self, separate_heads: bool = False, **kwargs):
         """
         Initialize merging method
 
         Args:
+            separate_heads: If True, merge only encoder task vectors and route each task
+                to its fine-tuned expert classification head (makes comparison with
+                training-based separate-head methods fair).
             **kwargs: Method-specific parameters
         """
         self.params = kwargs
+        self.separate_heads = separate_heads
 
     @abstractmethod
     def merge(
