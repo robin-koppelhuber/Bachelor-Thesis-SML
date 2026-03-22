@@ -93,7 +93,7 @@ class BaseTrainingMethod(ABC):
         keep_all_epoch_checkpoints: bool = False,
         early_stopping: bool = False,
         patience: int = 2,
-        split_seed: int = 42,
+        seed: int = 42,
         separate_heads: bool = True,
         **kwargs,
     ):
@@ -124,9 +124,10 @@ class BaseTrainingMethod(ABC):
                 from final benchmark evaluation.
             patience: Number of epochs without improvement before stopping (used when
                 early_stopping=True).
-            split_seed: Random seed for the stratified validation split. Must match the
-                seed used in reference_losses.py (default 42) to ensure the validation
-                set is the same subset used for utopia/nadir computation.
+            seed: Global random seed controlling model initialisation, DataLoader shuffle
+                order, and the stratified validation/evaluation split. Must match the seed
+                used in reference_losses.py (cfg.seed, default 42) so the reference split
+                is identical to the one used for utopia/nadir computation.
             separate_heads: When True (default), use T separate task-specific classification
                 heads (MultiTaskModel).  When False, use the legacy single shared head
                 (old behaviour — for reproducing earlier results only).
@@ -153,7 +154,7 @@ class BaseTrainingMethod(ABC):
         self.keep_all_epoch_checkpoints = keep_all_epoch_checkpoints
         self.early_stopping = early_stopping
         self.patience = patience
-        self.split_seed = split_seed
+        self.seed = seed
         self.separate_heads = separate_heads
 
     def __repr__(self) -> str:
@@ -226,8 +227,8 @@ class BaseTrainingMethod(ABC):
                         # Shuffle before selecting to avoid class-order bias in datasets like QNLI
                         # (constructed from SQuAD: same question repeated with alternating labels).
                         # sampling_seed varies per epoch so different epochs see different subsets,
-                        # increasing data coverage across training; falls back to split_seed.
-                        seed = sampling_seed if sampling_seed is not None else self.split_seed
+                        # increasing data coverage across training; falls back to seed.
+                        seed = sampling_seed if sampling_seed is not None else self.seed
                         dataset = dataset.shuffle(seed=seed).select(range(self.max_samples_per_task))
                         logger.info(
                             f"  Limited dataset: {original_size} -> {self.max_samples_per_task} samples (seed={seed})"
@@ -252,11 +253,16 @@ class BaseTrainingMethod(ABC):
                 # Only works with non-streaming datasets
                 processed.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
-            # Create DataLoader with memory-efficient settings
+            # Create DataLoader with memory-efficient settings.
+            # Use a seeded generator so batch ordering is reproducible (seed varies per
+            # epoch via sampling_seed so different epochs see different orderings).
+            _dl_seed = sampling_seed if sampling_seed is not None else self.seed
+            _generator = torch.Generator().manual_seed(_dl_seed)
             dataloader = DataLoader(
                 processed,
                 batch_size=self.batch_size,
                 shuffle=True if not self.use_streaming else False,  # Streaming doesn't support shuffle
+                generator=_generator,
                 collate_fn=default_data_collator,
                 num_workers=self.dataloader_num_workers,
                 pin_memory=True if torch.cuda.is_available() else False,
@@ -285,7 +291,7 @@ class BaseTrainingMethod(ABC):
 
         Mirrors the split logic in src/benchmarks/reference_losses.py:_load_reference_split()
         so the validation set is identical to the subset used for utopia/nadir computation.
-        Uses split_seed to ensure reproducibility and consistency with reference_losses.py
+        Uses self.seed to ensure reproducibility and consistency with reference_losses.py
         (default seed=42).
 
         The second half of the stratified split is reserved for final benchmark evaluation
@@ -322,7 +328,7 @@ class BaseTrainingMethod(ABC):
             split_result = dataset.train_test_split(
                 test_size=0.5,
                 stratify_by_column=label_column,
-                seed=self.split_seed,
+                seed=self.seed,
             )
             dataset = split_result["train"]  # first half = reference split
 
@@ -798,6 +804,11 @@ class BaseTrainingMethod(ABC):
 
         from src.models.loaders import load_tokenizer
         from src.utils.device import get_device
+        from src.utils.seeding import set_seed
+
+        # Seed all RNGs before any model init or data loading so the full training run
+        # is reproducible from a single seed (cfg.seed → method.seed).
+        set_seed(self.seed)
 
         # Normalize preferences
         if self.normalize_preferences:
@@ -852,10 +863,9 @@ class BaseTrainingMethod(ABC):
         else:
             logger.info("Gradient checkpointing disabled")
 
-        # Enable cuDNN benchmark for faster training (CUDA only, fixed input sizes)
-        if device.type == "cuda":
-            torch.backends.cudnn.benchmark = True
-            logger.info("cuDNN benchmark mode enabled for performance")
+        # cuDNN benchmark mode is intentionally left off (set_seed sets it to False).
+        # benchmark=True selects algorithms by runtime profiling which varies across runs,
+        # breaking reproducibility. The gain is negligible for Transformer workloads.
 
         # Compile model for improved performance (PyTorch 2.0+)
         # Note: Windows has limited Triton support, so we skip compilation there
@@ -947,7 +957,7 @@ class BaseTrainingMethod(ABC):
                 train_dataloaders = self._load_training_data(
                     dataset_configs, tokenizer, task_names,
                     cache_dir=dataset_cache_dir,
-                    sampling_seed=self.split_seed + epoch,
+                    sampling_seed=self.seed + epoch,
                 )
 
             avg_loss = self._train_epoch(

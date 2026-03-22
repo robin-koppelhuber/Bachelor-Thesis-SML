@@ -470,7 +470,11 @@ def run_benchmark(cfg: DictConfig, device: torch.device) -> Dict:
     logger.info("Step 2: Initializing merging method")
     logger.info("=" * 80)
 
-    method = MethodRegistry.create(cfg.method.name, **cfg.method.params)
+    # Inject cfg.seed so training methods seed model init, DataLoader shuffle, and the
+    # val split from a single value. A seed already present in method.params takes precedence.
+    _method_params = OmegaConf.to_container(cfg.method.params, resolve=True)
+    _method_params.setdefault("seed", cfg.seed)
+    method = MethodRegistry.create(cfg.method.name, **_method_params)
     logger.info(f"Method: {method}")
 
     # Import to check method type
