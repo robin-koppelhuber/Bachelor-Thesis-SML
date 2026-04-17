@@ -40,6 +40,7 @@ cluster = [
     "wandb>=0.23.0",
 ]
 dev = [
+    "ipykernel>=7.2.0",
     "mypy>=1.18.2",
     "pytest>=9.0.1",
     "ruff>=0.14.5",

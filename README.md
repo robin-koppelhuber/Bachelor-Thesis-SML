@@ -1,14 +1,33 @@
-[![Python Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Frobin-koppelhuber%2FBachelor-Thesis-SML%2Fmaster%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=python&color=blue&logo=python&logoColor=white)](https://github.com/robin-koppelhuber/Bachelor-Thesis-SML/blob/master/pyproject.toml) [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv) ![PyTorch](https://img.shields.io/badge/PyTorch-2.9.1-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)
+[![Python Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Frobin-koppelhuber%2FBachelor-Thesis-SML%2Fmaster%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=python&color=blue&logo=python&logoColor=white)](https://github.com/robin-koppelhuber/Bachelor-Thesis-SML/blob/master/pyproject.toml) [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv) [![PyTorch](https://img.shields.io/badge/PyTorch-2.9.1-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
+
+# Quantifying the Approximation Error of Task-Vector Merging in the Convex Hull
+
+Source code for my bachelor thesis at the [ETH Statistical Machine Learning Lab](https://sml.inf.ethz.ch/)
+
+> **[Read the thesis [PDF]](ETHZ_BSC_Thesis_SML.pdf)**
 
 ## About
 
-- This benchmark is part of my bachelor thesis at the ETH Statistical Machine Learning Lab ([ETH SML](https://sml.inf.ethz.ch/))
-- We quantify the statistical learning theory bias of the function class of models parameterized by the convex set of weights of fine-tuned expert models that share the same pre-training model, in the multi-task (MTL) and multi-objective (MOL) setting
-- This investigation is motivated by the fact that most model merging methods, especially data-free and zero shot methods, constrain themselves to the aforementioned convex set. Even though this is somewhat theoretically principled with investigations of linear mode connectivity and other phenomena as well as most importantly performance considerations, the results of this benchmark could prompt the development of novel methods. For more information see (*link final thesis*)
-- To this end, we benchmark multiple methods constrained to the convex set as well as more unconstrained methods like retraining from the pre-training model with chebyshev scalarization (...) or EPO search
----
-- Work in progress!
+A dominant class of model merging methods combines fine-tuned expert models by searching over convex combinations of their task vectors — a subset of parameter space with dimension at most the number of tasks minus one. While prior work has shown that useful trade-offs exist within this convex set, the approximation error incurred by restricting the search to such a low-dimensional subspace has not been quantified.
 
+This benchmark compares two data-free merging methods constrained to the convex hull (Task Arithmetic, TIES-Merging) against two training-based multi-objective optimization methods that optimize over the full parameter space (augmented Chebyshev scalarization, EPO Search). All methods are evaluated on binary GLUE tasks using RoBERTa-base across both a four-task and a focused two-task setting.
+
+**Key findings:**
+- Training-based methods consistently achieve trade-offs in objective space that are unattainable within the convex hull of task vectors
+- Task-vector averaging degrades catastrophically under destructive interference; TIES-Merging substantially mitigates this but retains a persistent gap to gradient-based methods.
+- On the two-task benchmark (MRPC–QNLI), the TIES Pareto front is clearly dominated despite a dense search over merging coefficients — indicating the gap is a geometric property of the convex set itself rather than a failure to find optimal coefficients.
+
+These results suggest that in overparameterized multi-task settings, the convex hull of task vectors is a fundamentally limited model class.
+
+![Pareto front on MRPC–QNLI](notebooks/pareto_qnli_mrpc.png)
+
+*Each point is a different trade-off configuration — how much weight to place on each task. The star marks the best performance achievable on each task independently. Training-based methods (Chebyshev, EPO) reach trade-offs that merging cannot, even after an exhaustive search over merging coefficients.*
+
+![Per-task performance heatmaps (four-task benchmark)](notebooks/heatmaps_4task.png)
+
+*Each panel shows one method. Rows are different task-priority configurations; columns are the four tasks. Merging methods show severe degradation on CoLA and QNLI under most configurations; training-based methods maintain high performance across all tasks and priorities simultaneously.*
+
+---
 
 ## Install
 
@@ -76,15 +95,15 @@ Output lands in `<run_dir>/visualizations_replot_<timestamp>/` by default. If `r
 ### Benchmarks
 
 | Config | Tasks |
-|---|---|
-| `poc` | ag_news, imdb, mnli, mrpc |
+|--------|-------|
+| `poc` | ag\_news, imdb, mnli, mrpc |
 | `glue-2-label` | cola, mrpc, qnli, sst2 |
 | `recovery-cola` / `recovery-mrpc` / `recovery-qnli` / `recovery-sst2` | Single-task recovery |
 
 ### Methods
 
 | Config | Description |
-|---|---|
+|--------|-------------|
 | `averaging` | Weighted task-vector averaging |
 | `ties` | TIES merging (magnitude-based conflict resolution) |
 | `chebyshev` | Fine-tuning with Chebyshev scalarization |
@@ -98,11 +117,13 @@ Output lands in `<run_dir>/visualizations_replot_<timestamp>/` by default. If `r
 The `configs/cluster/euler.yaml` override redirects all paths to `$SCRATCH`. Assumes the repo is at `$HOME/Bachelor-Thesis-SML` (symlink or clone).
 
 **One-time setup** (login node):
+
 ```bash
 bash scripts/cluster/setup_euler.sh
 ```
 
 **Submit a job:**
+
 ```bash
 sbatch --export=BENCHMARK=glue-2-label,METHOD=chebyshev \
   scripts/cluster/run_benchmark.slurm
@@ -114,6 +135,7 @@ EXTRA_ARGS="seed=123 wandb.group=sweep1" \
 ```
 
 **Pull results to local machine:**
+
 ```bash
 bash scripts/cluster/extract_results.sh [your_nethz]
 ```
@@ -124,12 +146,12 @@ Results are also synced to W&B automatically during the run.
 
 ## Config reference
 
-The framework uses [Hydra](https://hydra.cc/) for configuration. All configs are in [configs/](configs/).
+The framework uses [Hydra](https://hydra.cc/) for configuration. All configs are in [configs/](configs).
 
 ### Key command-line overrides
 
 | Option | Values | Description |
-|---|---|---|
+|--------|--------|-------------|
 | `benchmark` | `poc`, `glue-2-label`, `recovery-*` | Benchmark |
 | `method` | see Methods table above | Merging method |
 | `device` | `auto`, `cpu`, `cuda`, `xpu` | Compute device |
@@ -172,11 +194,13 @@ benchmark:
 ## Troubleshooting
 
 **W&B disabled:**
+
 ```bash
 uv run python main.py wandb.mode=disabled
 ```
 
 **Module not found:**
+
 ```bash
 uv pip install -e .
 ```
@@ -186,25 +210,11 @@ uv pip install -e .
 ## Benchmark design
 
 - Base model: [roberta-base](https://huggingface.co/FacebookAI/roberta-base)
-- Fine-tuned checkpoints: [textattack/roberta-base-*](https://huggingface.co/textattack) for all tasks
+- Fine-tuned checkpoints: [textattack/roberta-base-\*](https://huggingface.co/textattack) for all tasks
 - Task vectors with different classification head sizes are zero-padded before merging; MNLI label order is remapped
 - All models share the same pre-training point (required for linear mode connectivity)
----
-- todo: expand on benchmark explanation, design decisions etc.
 
-### (tmp) old poc benchmark explanation
-- We will first implement a proof of concept of the methodology before moving to bigger & harder to train models, more datasets and different architectures
-- As a base model we use [roberta-base](https://huggingface.co/FacebookAI/roberta-base), an improved version of [bert-base-uncased](https://huggingface.co/google-bert/bert-base-uncased)
-- For supervised fine tuning we will use the textattack roberta-base checkpoints for the following datastes
-  1. [AG News](https://huggingface.co/datasets/wangrongsheng/ag_news) datasets - classifying news articles with topic; [HF textattact/roberta-base-ag-news](https://huggingface.co/textattack/roberta-base-ag-news)
-  2. [IMDB](https://huggingface.co/datasets/stanfordnlp/imdb) dataset - classifying movie reviews into positive and negative; [HF textattac/roberta-base-imdb](https://huggingface.co/textattack/roberta-base-imdb#textattack-model-card)
-  3. [MNLI](https://huggingface.co/datasets/SetFit/mnli) dataset - classify if how a premise fits a hypothesis; [HF textattack/roberta-base-MNLI](https://huggingface.co/textattack/roberta-base-MNLI)
-  4. [MRPC dataset](https://huggingface.co/datasets/SetFit/mrpc) - decide whether a text is a Paraphrase of another; [HF textattack/roberta-base-MRPC](https://huggingface.co/textattack/roberta-base-MRPC)
-- For more potential roberta-base fine tuned models from text-attack see [here](https://huggingface.co/textattack/models?search=roberta-base)
-- As an alternative pre-training point the [ibm-research/ColD-Fusion-...-seed0](https://huggingface.co/ibm-research/models?search=seed0&sort=created&p=1) models could be used; merged model from 35 fine tuned models on different tasks from bert-base-uncased ([paper](https://arxiv.org/abs/2212.01378))
-- For additional unlabeled data required by some merging methods we could use [wikitext-103](https://huggingface.co/datasets/Salesforce/wikitext)
-
-## Resources
+## Related work and resources
 
 - [Fusion Bench](https://github.com/tanganke/fusion_bench/tree/main) — reference implementations of task arithmetic methods
 - [Mergekit](https://github.com/arcee-ai/mergekit) — application-focused model merging toolkit
